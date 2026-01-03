@@ -325,6 +325,7 @@ export class LiveMatchController {
   @MessagePattern('live-match.handleEvent')
   async handleEvent(@Payload() payload: { matchId: string; event: ScoreEventDto }) {
     try {
+      console.log('handleEvent payload', payload);
       const ballEvent: any = { ...payload.event, matchId: payload.matchId };
       const result = await this.scoreEngineService.handleEvent(payload.matchId, ballEvent);
       // Return wrapped response for gateway

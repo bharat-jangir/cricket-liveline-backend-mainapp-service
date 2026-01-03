@@ -28,10 +28,8 @@ export class LiveMatchStatus {
 
   @Prop({
     required: true,
-    min: 0,
-    max: 6,
   })
-  currentBall: number;
+  currentBall: string;
 
   @Prop({
     type: Types.ObjectId,
