@@ -2,6 +2,7 @@ import { NestFactory } from '@nestjs/core';
 import { ValidationPipe, Logger, ConsoleLogger } from '@nestjs/common';
 import { MicroserviceOptions, Transport } from '@nestjs/microservices';
 import { AppModule } from './app.module';
+import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 
 class CustomLogger extends ConsoleLogger {
   log(message: string, context?: string) {
@@ -17,6 +18,16 @@ class CustomLogger extends ConsoleLogger {
     }
     super.log(message, context);
   }
+
+  error(message: string, stack?: string, context?: string) {
+    // Always show errors
+    super.error(message, stack, context);
+  }
+
+  warn(message: string, context?: string) {
+    // Always show warnings
+    super.warn(message, context);
+  }
 }
 
 async function bootstrap() {
@@ -25,6 +36,9 @@ async function bootstrap() {
     logger: new CustomLogger(),
   });
   
+  // Global exception filter
+  app.useGlobalFilters(new HttpExceptionFilter());
+
   // Global validation pipe
   app.useGlobalPipes(
     new ValidationPipe({

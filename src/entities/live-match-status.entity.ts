@@ -1,5 +1,5 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import { Document, Types } from 'mongoose';
+import { Document, Types, Schema as MongooseSchema } from 'mongoose';
 
 export type LiveMatchStatusDocument = LiveMatchStatus & Document;
 
@@ -156,13 +156,31 @@ export class LiveMatchStatus {
   @Prop({ default: '' })
   comment2: string;
 
-  @Prop({ default: '' })
-  comment3: string;
-
   @Prop({
-    default: Date.now,
+    type: {
+      name: String,
+      dismissal: String,
+      runs: Number,
+      balls: Number,
+      fours: Number,
+      sixes: Number,
+      to: String,
+      tr: { type: MongooseSchema.Types.Mixed },
+      playerId: { type: Types.ObjectId, ref: 'Player' },
+    },
+    default: null,
   })
-  lastBallTimestamp: Date;
+  lastWicket?: {
+    name: string;
+    dismissal: string;
+    runs: number;
+    balls: number;
+    fours: number;
+    sixes: number;
+    to: string;
+    tr: any;
+    playerId: Types.ObjectId;
+  };
 }
 
 export const LiveMatchStatusSchema = SchemaFactory.createForClass(LiveMatchStatus);

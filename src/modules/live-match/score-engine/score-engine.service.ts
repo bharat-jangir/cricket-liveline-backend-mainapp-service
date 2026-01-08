@@ -88,17 +88,40 @@ export class ScoreEngineService {
 
         // Fetch players based on IDs stored in LiveStatus
         const [striker, nonStriker, bowler] = await Promise.all([
-            liveStatus.currentStrikerId ? this.battingModel.findOne({ matchId, inningId: inning._id, playerId: liveStatus.currentStrikerId, isOut: false }).exec() : null,
-            liveStatus.currentNonStrikerId ? this.battingModel.findOne({ matchId, inningId: inning._id, playerId: liveStatus.currentNonStrikerId, isOut: false }).exec() : null,
-            liveStatus.currentBowlerId ? this.bowlingModel.findOne({ matchId, inningId: inning._id, playerId: liveStatus.currentBowlerId }).exec() : null
+            liveStatus.currentStrikerId ? this.battingModel.findOne({ matchId, inningId: inning._id, playerId: liveStatus.currentStrikerId, isOut: false }).populate('playerId', 'name').exec() : null,
+            liveStatus.currentNonStrikerId ? this.battingModel.findOne({ matchId, inningId: inning._id, playerId: liveStatus.currentNonStrikerId, isOut: false }).populate('playerId', 'name').exec() : null,
+            liveStatus.currentBowlerId ? this.bowlingModel.findOne({ matchId, inningId: inning._id, playerId: liveStatus.currentBowlerId }).populate('playerId', 'name').exec() : null
         ]);
+
+        // Ensure BattingScorecard isOnStrike flags are synchronized with LiveMatchStatus IDs
+        if (striker || nonStriker) {
+            // First, set all batsmen in this inning to non-striker
+            await this.battingModel.updateMany(
+                { matchId, inningId: inning._id, isOut: false },
+                { $set: { isOnStrike: false } }
+            );
+            
+            // Then set the correct striker flag if striker exists
+            if (striker) {
+                await this.battingModel.updateOne(
+                    { matchId, inningId: inning._id, playerId: striker.playerId },
+                    { $set: { isOnStrike: true } }
+                );
+                striker.isOnStrike = true;
+            }
+            
+            // Ensure non-striker flag is set correctly
+            if (nonStriker) {
+                nonStriker.isOnStrike = false;
+            }
+        }
 
         return {
             liveStatus,
             inning,
-            striker: striker as any,
-            nonStriker: nonStriker as any,
-            bowler: bowler as any,
+            striker: striker ? { ...striker.toObject(), playerName: (striker.playerId as any)?.name || 'Unknown' } as any : null,
+            nonStriker: nonStriker ? { ...nonStriker.toObject(), playerName: (nonStriker.playerId as any)?.name || 'Unknown' } as any : null,
+            bowler: bowler ? { ...bowler.toObject(), playerName: (bowler.playerId as any)?.name || 'Unknown' } as any : null,
             currentOverBalls: []
         };
     }
@@ -154,9 +177,8 @@ export class ScoreEngineService {
             this.swapStrike(state);
         }
 
-        // 5. Over End Logic
+        // 5. Over completion tracking (no automatic strike change)
         if (isLegalBall && inning.totalBalls % 6 === 0) {
-            this.swapStrike(state); // Change strike at end of over
             if (bowler) bowler.completedOvers = (bowler.completedOvers || 0) + 1;
         }
 
@@ -177,6 +199,19 @@ export class ScoreEngineService {
             inning.totalWickets += 1;
             inning.totalBalls += 1;
 
+            // Update lastWicket in inning
+            inning.lastWicket = {
+                name: (striker as any).playerName || 'Unknown',
+                dismissal: event.wicketType || 'bowled',
+                runs: striker.runs,
+                balls: striker.balls,
+                fours: striker.fours,
+                sixes: striker.sixes,
+                to: (bowler as any)?.playerName || 'Unknown',
+                tr: `${striker.runs}(${striker.balls})`,
+                playerId: striker.playerId
+            };
+
             if (bowler) {
                 bowler.balls += 1;
                 bowler.wickets += 1;
@@ -195,8 +230,16 @@ export class ScoreEngineService {
             const temp = state.striker;
             state.striker = state.nonStriker;
             state.nonStriker = temp;
+            
+            // Update both players' isOnStrike flags
             state.striker.isOnStrike = true;
             state.nonStriker.isOnStrike = false;
+            
+            // Update LiveMatchStatus IDs
+            if (state.liveStatus) {
+                state.liveStatus.currentStrikerId = state.striker.playerId;
+                state.liveStatus.currentNonStrikerId = state.nonStriker.playerId;
+            }
         }
     }
 
@@ -216,7 +259,8 @@ export class ScoreEngineService {
     }
 
     private async endOver(state: MatchState): Promise<MatchState> {
-        // Logic for manual over end if needed
+        // Change strike at end of over
+        this.swapStrike(state);
         return state;
     }
 
@@ -257,7 +301,30 @@ export class ScoreEngineService {
             liveStatus.currentBowlerId = bowler?.playerId || null;
             liveStatus.overs = `${Math.floor(inning.totalBalls / 6)}.${inning.totalBalls % 6}`;
             liveStatus.score = `${inning.totalRuns}/${inning.totalWickets}`;
+            
+            // Sync lastWicket from inning to liveStatus
+            if (inning.lastWicket) {
+                liveStatus.lastWicket = inning.lastWicket;
+            }
+            
             await liveStatus.save();
+        }
+
+        // Ensure BattingScorecard isOnStrike flags are synchronized with LiveMatchStatus IDs
+        if (striker || nonStriker) {
+            // First, set all batsmen in this inning to non-striker
+            await this.battingModel.updateMany(
+                { matchId: inning.matchId, inningId: inning._id, isOut: false },
+                { $set: { isOnStrike: false } }
+            );
+            
+            // Then set the correct striker flag if striker exists
+            if (striker) {
+                await this.battingModel.updateOne(
+                    { matchId: inning.matchId, inningId: inning._id, playerId: striker.playerId },
+                    { $set: { isOnStrike: true } }
+                );
+            }
         }
 
         await Promise.all([

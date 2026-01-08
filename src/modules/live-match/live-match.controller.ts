@@ -27,58 +27,21 @@ export class LiveMatchController {
   async getLiveStatus(@Payload() matchId: string) {
     try {
       const result = await this.liveMatchService.getLiveStatus(matchId);
-      if (!result || !result.response) {
-        this.logger.error('Service returned invalid result structure', { result });
-        throw new Error('Service returned invalid result structure');
-      }
-      return result.response;
+      // Return the service response as-is (contains data.result structure)
+      return result;
     } catch (error: any) {
       this.logger.error('Error in getLiveStatus', error.stack || error.message || error);
       throw error;
     }
   }
 
-  @MessagePattern('live-match.getInnings')
-  async getInnings(@Payload() matchId: string) {
-    try {
-      const result = await this.liveMatchService.getInnings(matchId);
-      if (!result || !result.response) {
-        this.logger.error('Service returned invalid result structure', { result });
-        throw new Error('Service returned invalid result structure');
-      }
-      return result.response;
-    } catch (error: any) {
-      this.logger.error('Error in getInnings', error.stack || error.message || error);
-      throw error;
-    }
-  }
-
-  @MessagePattern('live-match.updateStatus')
+  @MessagePattern('live-match.updateLiveStatus')
   async updateLiveStatus(@Payload() payload: { matchId: string; updateDto: UpdateLiveStatusDto }) {
     try {
       const result = await this.liveMatchService.updateLiveStatus(payload.matchId, payload.updateDto);
-      if (!result || !result.response) {
-        this.logger.error('Service returned invalid result structure', { result });
-        throw new Error('Service returned invalid result structure');
-      }
-      return result.response;
+      return result;
     } catch (error: any) {
       this.logger.error('Error in updateLiveStatus', error.stack || error.message || error);
-      throw error;
-    }
-  }
-
-  @MessagePattern('live-match.switchTeams')
-  async switchTeams(@Payload() payload: { matchId: string; switchDto: SwitchTeamDto }) {
-    try {
-      const result = await this.liveMatchService.switchTeams(payload.matchId, payload.switchDto);
-      if (!result || !result.response) {
-        this.logger.error('Service returned invalid result structure', { result });
-        throw new Error('Service returned invalid result structure');
-      }
-      return result.response;
-    } catch (error: any) {
-      this.logger.error('Error in switchTeams', error.stack || error.message || error);
       throw error;
     }
   }
@@ -87,28 +50,9 @@ export class LiveMatchController {
   async getMatchSquads(@Payload() matchId: string) {
     try {
       const result = await this.liveMatchService.getMatchSquads(matchId);
-      if (!result || !result.response) {
-        this.logger.error('Service returned invalid result structure', { result });
-        throw new Error('Service returned invalid result structure');
-      }
-      return result.response;
+      return result;
     } catch (error: any) {
       this.logger.error('Error in getMatchSquads', error.stack || error.message || error);
-      throw error;
-    }
-  }
-
-  @MessagePattern('live-match.updateSquad')
-  async updateMatchSquad(@Payload() payload: { matchId: string; teamId: string; updateDto: UpdateMatchSquadDto }) {
-    try {
-      const result = await this.liveMatchService.updateMatchSquad(payload.matchId, payload.teamId, payload.updateDto);
-      if (!result || !result.response) {
-        this.logger.error('Service returned invalid result structure', { result });
-        throw new Error('Service returned invalid result structure');
-      }
-      return result.response;
-    } catch (error: any) {
-      this.logger.error('Error in updateMatchSquad', error.stack || error.message || error);
       throw error;
     }
   }
@@ -116,12 +60,9 @@ export class LiveMatchController {
   @MessagePattern('live-match.getScorecard')
   async getScorecard(@Payload() payload: { matchId: string; inningNumber: number }) {
     try {
+      this.logger.log(`getScorecard called with:`, JSON.stringify(payload));
       const result = await this.liveMatchService.getScorecard(payload.matchId, payload.inningNumber);
-      if (!result || !result.response) {
-        this.logger.error('Service returned invalid result structure', { result });
-        throw new Error('Service returned invalid result structure');
-      }
-      return result.response;
+      return result;
     } catch (error: any) {
       this.logger.error('Error in getScorecard', error.stack || error.message || error);
       throw error;
@@ -347,6 +288,74 @@ export class LiveMatchController {
     }
   }
 
+  @MessagePattern('live-match.handleSimpleEvent')
+  async handleSimpleEvent(@Payload() payload: { matchId: string; event: string }) {
+    try {
+      console.log('handleSimpleEvent payload', payload);
+
+      // Parse simple event string to ScoreEventDto format
+      const event = this.parseSimpleEvent(payload.event);
+      if (!event) {
+        return {
+          status: false,
+          statusCode: 400,
+          message: `Invalid event string: ${payload.event}`,
+          userMessage: `Event '${payload.event}' is not recognized`,
+        };
+      }
+
+      // Use existing score engine with parsed event
+      const ballEvent: any = { ...event, matchId: payload.matchId };
+      const result = await this.scoreEngineService.handleEvent(payload.matchId, ballEvent);
+
+      return {
+        status: true,
+        statusCode: 200,
+        message: 'Simple event processed successfully',
+        data: { result }
+      };
+    } catch (error: any) {
+      this.logger.error('Error in handleSimpleEvent', error.stack || error.message || error);
+      return {
+        status: false,
+        statusCode: error.status || 500,
+        message: error.message || 'Internal Server Error',
+        userMessage: error.message || 'Failed to process simple event',
+      };
+    }
+  }
+
+  private parseSimpleEvent(eventString: string): any | null {
+    const event = eventString.toLowerCase().trim();
+
+    if (/^[1-6]$/.test(event)) {
+      return {
+        type: 'RUN',
+        runs: parseInt(event),
+        isBoundary: event === '4' || event === '6'
+      };
+    }
+
+    if (event === '0') {
+      return { type: 'RUN', runs: 0 };
+    }
+
+    if (/^lb[1-4]$/.test(event)) {
+      return {
+        type: 'LEG_BYE',
+        runs: parseInt(event.substring(2))
+      };
+    }
+
+    switch (event) {
+      case 'nb': return { type: 'NO_BALL', runs: 0, extras: 1 };
+      case 'wd': return { type: 'WIDE', runs: 0, extras: 1 };
+      case 'w': return { type: 'WICKET', runs: 0 };
+      case 'o': return { type: 'OVER_END' };
+      default: return null;
+    }
+  }
+
   @MessagePattern('live-match.setStriker')
   async setStriker(@Payload() payload: { matchId: string; inningNumber: number; playerId: string }) {
     try {
@@ -380,16 +389,15 @@ export class LiveMatchController {
     }
   }
 
-  @MessagePattern('live-match.setCurrentBowler')
-  async setCurrentBowler(@Payload() payload: { matchId: string; inningNumber: number; playerId: string }) {
+  @MessagePattern('live-match.getRecentOvers')
+  async getRecentOvers(@Payload() payload: { matchId: string; inningNumber?: number }) {
     try {
-      const result = await this.liveMatchService.setCurrentBowler(payload.matchId, payload.inningNumber, payload.playerId);
+      const result = await this.liveMatchService.getRecentOvers(payload.matchId, payload.inningNumber);
       return result;
     } catch (error: any) {
-      this.logger.error('Error in setCurrentBowler', error.stack || error.message || error);
+      this.logger.error('Error in getRecentOvers', error.stack || error.message || error);
       throw error;
     }
   }
+
 }
-
-
