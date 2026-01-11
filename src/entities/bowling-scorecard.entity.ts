@@ -29,9 +29,9 @@ export class BowlingScorecard {
   @Prop({
     type: Types.ObjectId,
     ref: 'Team',
-    required: true,
+    required: false,
   })
-  teamId: Types.ObjectId;
+  teamId?: Types.ObjectId;
 
   @Prop({
     required: true,
@@ -44,12 +44,6 @@ export class BowlingScorecard {
     min: 0,
   })
   overs: number;
-
-  @Prop({
-    default: 0,
-    min: 0,
-  })
-  completedOvers: number;
 
   @Prop({
     default: 0,

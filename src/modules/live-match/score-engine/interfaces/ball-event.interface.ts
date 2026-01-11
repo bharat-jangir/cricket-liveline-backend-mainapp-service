@@ -1,7 +1,7 @@
 
 export interface BallEvent {
     matchId: string;
-    type: 'RUN' | 'WIDE' | 'NO_BALL' | 'BYE' | 'LEG_BYE' | 'WICKET' | 'UNDO' | 'OVER_END' | 'SWAP_BATSMAN';
+    type: string; // Allow any event type
     runs?: number; // 0, 1, 2, 3, 4, 6
     isBoundary?: boolean;
     wicketType?: string; // bowled, caught, etc.

@@ -29,9 +29,9 @@ export class BattingScorecard {
   @Prop({
     type: Types.ObjectId,
     ref: 'Team',
-    required: true,
+    required: false,
   })
-  teamId: Types.ObjectId;
+  teamId?: Types.ObjectId;
 
   @Prop({
     required: true,

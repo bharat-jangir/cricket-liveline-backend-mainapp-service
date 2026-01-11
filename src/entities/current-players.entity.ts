@@ -21,12 +21,14 @@ export class CurrentPlayers {
   inningId: Types.ObjectId;
 
   @Prop({
-    playerId: { type: Types.ObjectId, ref: 'Player', required: true },
-    runs: { type: Number, default: 0, min: 0 },
-    balls: { type: Number, default: 0, min: 0 },
-    fours: { type: Number, default: 0, min: 0 },
-    sixes: { type: Number, default: 0, min: 0 },
-    sr: { type: Number, default: 0 },
+    type: {
+      playerId: { type: Types.ObjectId, ref: 'Player', required: true },
+      runs: { type: Number, default: 0, min: 0 },
+      balls: { type: Number, default: 0, min: 0 },
+      fours: { type: Number, default: 0, min: 0 },
+      sixes: { type: Number, default: 0, min: 0 },
+      sr: { type: Number, default: 0 },
+    }
   })
   striker: {
     playerId: Types.ObjectId;
@@ -38,12 +40,14 @@ export class CurrentPlayers {
   };
 
   @Prop({
-    playerId: { type: Types.ObjectId, ref: 'Player', required: true },
-    runs: { type: Number, default: 0, min: 0 },
-    balls: { type: Number, default: 0, min: 0 },
-    fours: { type: Number, default: 0, min: 0 },
-    sixes: { type: Number, default: 0, min: 0 },
-    sr: { type: Number, default: 0 },
+    type: {
+      playerId: { type: Types.ObjectId, ref: 'Player', required: true },
+      runs: { type: Number, default: 0, min: 0 },
+      balls: { type: Number, default: 0, min: 0 },
+      fours: { type: Number, default: 0, min: 0 },
+      sixes: { type: Number, default: 0, min: 0 },
+      sr: { type: Number, default: 0 },
+    }
   })
   nonStriker: {
     playerId: Types.ObjectId;
@@ -55,12 +59,14 @@ export class CurrentPlayers {
   };
 
   @Prop({
-    playerId: { type: Types.ObjectId, ref: 'Player', required: true },
-    overs: { type: Number, default: 0, min: 0 },
-    maidens: { type: Number, default: 0, min: 0 },
-    runs: { type: Number, default: 0, min: 0 },
-    wickets: { type: Number, default: 0, min: 0 },
-    economy: { type: Number, default: 0 },
+    type: {
+      playerId: { type: Types.ObjectId, ref: 'Player', required: true },
+      overs: { type: Number, default: 0, min: 0 },
+      maidens: { type: Number, default: 0, min: 0 },
+      runs: { type: Number, default: 0, min: 0 },
+      wickets: { type: Number, default: 0, min: 0 },
+      economy: { type: Number, default: 0 },
+    }
   })
   bowler: {
     playerId: Types.ObjectId;

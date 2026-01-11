@@ -295,17 +295,9 @@ export class LiveMatchController {
 
       // Parse simple event string to ScoreEventDto format
       const event = this.parseSimpleEvent(payload.event);
-      if (!event) {
-        return {
-          status: false,
-          statusCode: 400,
-          message: `Invalid event string: ${payload.event}`,
-          userMessage: `Event '${payload.event}' is not recognized`,
-        };
-      }
-
-      // Use existing score engine with parsed event
-      const ballEvent: any = { ...event, matchId: payload.matchId };
+      
+      // Use existing score engine with parsed event but preserve original event string
+      const ballEvent: any = { ...event, matchId: payload.matchId, originalEvent: payload.event };
       const result = await this.scoreEngineService.handleEvent(payload.matchId, ballEvent);
 
       return {
@@ -352,7 +344,9 @@ export class LiveMatchController {
       case 'wd': return { type: 'WIDE', runs: 0, extras: 1 };
       case 'w': return { type: 'WICKET', runs: 0 };
       case 'o': return { type: 'OVER_END' };
-      default: return null;
+      default: 
+        // For unknown events, return the event string as type
+        return { type: eventString };
     }
   }
 
@@ -385,6 +379,17 @@ export class LiveMatchController {
       return result;
     } catch (error: any) {
       this.logger.error('Error in swapBatsmen', error.stack || error.message || error);
+      throw error;
+    }
+  }
+
+  @MessagePattern('live-match.setCurrentBowler')
+  async setCurrentBowler(@Payload() payload: { matchId: string; inningNumber: number; playerId: string }) {
+    try {
+      const result = await this.liveMatchService.setCurrentBowler(payload.matchId, payload.inningNumber, payload.playerId);
+      return result;
+    } catch (error: any) {
+      this.logger.error('Error in setCurrentBowler', error.stack || error.message || error);
       throw error;
     }
   }
