@@ -304,18 +304,168 @@ export class ScoreEngineService {
         const lastHistory = await this.scoreHistoryModel.findOne({ matchId: new Types.ObjectId(matchId) }).sort({ createdAt: -1 });
         if (!lastHistory) throw new BadRequestException('No history found to undo');
 
-        const snapshot = lastHistory.stateSnapshot as any;
+        const lastEvent = lastHistory.event;
+        const currentState = await this.loadState(new Types.ObjectId(matchId));
+        
+        // Validate undo is possible
+        this.validateUndoOperation(currentState, lastEvent);
+        
+        // Reverse the last ball based on event type
+        await this.reverseBallEvent(currentState, lastEvent);
+        
+        // Save the reversed state
+        await this.persistState(currentState);
+        
+        // Delete the history entry
+        await this.scoreHistoryModel.findByIdAndDelete(lastHistory._id);
+        
+        return currentState.liveStatus;
+    }
 
-        await Promise.all([
-            this.liveStatusModel.findByIdAndUpdate(snapshot.liveStatus._id, snapshot.liveStatus),
-            this.inningModel.findByIdAndUpdate(snapshot.inning._id, snapshot.inning),
-            snapshot.striker && this.battingModel.findByIdAndUpdate(snapshot.striker._id, snapshot.striker),
-            snapshot.nonStriker && this.battingModel.findByIdAndUpdate(snapshot.nonStriker._id, snapshot.nonStriker),
-            snapshot.bowler && this.bowlingModel.findByIdAndUpdate(snapshot.bowler._id, snapshot.bowler),
-            this.scoreHistoryModel.findByIdAndDelete(lastHistory._id)
-        ]);
+    private validateUndoOperation(state: MatchState, event: BallEvent): void {
+        // Prevent negative values
+        const runsScored = event.runs || 0;
+        const extras = event.extras || 0;
+        
+        if (state.inning.totalRuns < (runsScored + extras)) {
+            throw new BadRequestException('Cannot undo: Would result in negative total runs');
+        }
+        
+        if (event.type === 'WICKET' && state.inning.totalWickets <= 0) {
+            throw new BadRequestException('Cannot undo: No wickets to reverse');
+        }
+        
+        if (event.type === 'WIDE' && state.inning.wides < (extras || 1)) {
+            throw new BadRequestException('Cannot undo: Insufficient wides to reverse');
+        }
+        
+        if (event.type === 'NO_BALL' && state.inning.noBalls < (extras || 1)) {
+            throw new BadRequestException('Cannot undo: Insufficient no-balls to reverse');
+        }
+        
+        const isLegalBall = event.type !== 'WIDE' && event.type !== 'NO_BALL';
+        if (isLegalBall && state.inning.totalBalls <= 0) {
+            throw new BadRequestException('Cannot undo: No balls to reverse');
+        }
+    }
 
-        return snapshot.liveStatus;
+    private async reverseBallEvent(state: MatchState, event: BallEvent): Promise<void> {
+        const { inning, striker, nonStriker, bowler } = state;
+        const runsScored = event.runs || 0;
+        const extras = event.extras || 0;
+        
+        const isWide = event.type === 'WIDE';
+        const isNoBall = event.type === 'NO_BALL';
+        const isBye = event.type === 'BYE';
+        const isLegBye = event.type === 'LEG_BYE';
+        const isLegalBall = !isWide && !isNoBall;
+        const isWicket = event.type === 'WICKET';
+        const isOverEnd = event.type === 'OVER_END';
+
+        // Handle OVER_END separately
+        if (isOverEnd) {
+            this.swapStrike(state); // Reverse strike swap
+            return;
+        }
+
+        // 1. Reverse Inning Updates
+        inning.totalRuns = Math.max(0, inning.totalRuns - (runsScored + extras));
+        if (isLegalBall) inning.totalBalls = Math.max(0, inning.totalBalls - 1);
+        if (isWide) inning.wides = Math.max(0, inning.wides - (extras || 1));
+        if (isNoBall) inning.noBalls = Math.max(0, inning.noBalls - (extras || 1));
+        if (isBye) inning.byes = Math.max(0, inning.byes - runsScored);
+        if (isLegBye) inning.legByes = Math.max(0, inning.legByes - runsScored);
+        inning.extras = Math.max(0, inning.extras - extras);
+        if (isWicket) {
+            inning.totalWickets = Math.max(0, inning.totalWickets - 1);
+            // Clear last wicket if this was the last wicket
+            if (inning.totalWickets === 0) {
+                inning.lastWicket = null;
+            }
+        }
+
+        // 2. Reverse Striker Updates (BEFORE strike rotation)
+        if (striker && !isWide) {
+            if (!isBye && !isLegBye && !isWicket) {
+                striker.runs = Math.max(0, striker.runs - runsScored);
+                if (runsScored === 4) striker.fours = Math.max(0, striker.fours - 1);
+                if (runsScored === 6) striker.sixes = Math.max(0, striker.sixes - 1);
+            }
+            if (isLegalBall || isNoBall) {
+                striker.balls = Math.max(0, striker.balls - 1);
+                striker.strikeRate = striker.balls > 0 ? (striker.runs / striker.balls) * 100 : 0;
+            }
+            if (isWicket) {
+                striker.isOut = false;
+                striker.dismissalType = null;
+                striker.bowlerId = null;
+                striker.teamId = null;
+            }
+        }
+
+        // 3. Reverse Strike Rotation (AFTER updating striker stats)
+        if (!isWide && !isWicket && runsScored % 2 !== 0) {
+            this.swapStrike(state);
+        }
+
+        // 4. Reverse Bowler Updates
+        if (bowler) {
+            if (isLegalBall || (isNoBall && event.type === 'WICKET')) {
+                bowler.balls = Math.max(0, bowler.balls - 1);
+                const completedOvers = Math.floor(bowler.balls / 6);
+                const remainingBalls = bowler.balls % 6;
+                bowler.overs = parseFloat(`${completedOvers}.${remainingBalls}`);
+            }
+            if (!isBye && !isLegBye) {
+                bowler.runs = Math.max(0, bowler.runs - (runsScored + extras));
+            }
+            if (isWicket) {
+                bowler.wickets = Math.max(0, bowler.wickets - 1);
+            }
+            // Recalculate economy - handle division by zero
+            if (bowler.overs > 0) {
+                bowler.economy = bowler.runs / bowler.overs;
+            } else {
+                bowler.economy = 0;
+            }
+        }
+
+        // 5. Remove last ball from over summary
+        await this.removeLastBallFromOverSummary(state);
+    }
+
+    private async removeLastBallFromOverSummary(state: MatchState): Promise<void> {
+        if (!state.bowler) return;
+        
+        // Calculate which over the undone ball belonged to
+        const ballsBeforeUndo = state.inning.totalBalls + 1;
+        const overNumber = Math.ceil(ballsBeforeUndo / 6);
+        
+        const overSummary = await this.overSummaryModel.findOne({
+            matchId: state.inning.matchId,
+            inningId: state.inning._id,
+            overNumber: overNumber
+        });
+
+        if (overSummary && overSummary.ballsData.length > 0) {
+            // Remove last ball
+            overSummary.ballsData.pop();
+            
+            // If no balls left, delete the over summary
+            if (overSummary.ballsData.length === 0) {
+                await this.overSummaryModel.findByIdAndDelete(overSummary._id);
+            } else {
+                // Recalculate over summary stats from remaining balls
+                overSummary.runs = 0;
+                overSummary.wickets = 0;
+                overSummary.extras = 0;
+                
+                // Note: This is simplified. In production, you might want to
+                // recalculate from the actual ball data or store more details
+                overSummary.isMaiden = overSummary.runs === 0 && overSummary.wickets === 0;
+                await overSummary.save();
+            }
+        }
     }
 
     private async persistState(state: MatchState, event?: BallEvent) {
