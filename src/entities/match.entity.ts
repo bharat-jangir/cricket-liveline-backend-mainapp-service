@@ -136,6 +136,46 @@ export class Match {
   @Prop({ default: 0 })
   priority: number;
 
+  @Prop({ trim: true })
+  toss?: string;
+
+  @Prop({
+    type: Types.ObjectId,
+    ref: 'Umpire',
+    default: null,
+  })
+  straightUmpireId?: Types.ObjectId;
+
+  @Prop({
+    type: Types.ObjectId,
+    ref: 'Umpire',
+    default: null,
+  })
+  legUmpireId?: Types.ObjectId;
+
+  @Prop({
+    type: Types.ObjectId,
+    ref: 'Umpire',
+    default: null,
+  })
+  thirdUmpireId?: Types.ObjectId;
+
+  @Prop({
+    type: Types.ObjectId,
+    ref: 'Umpire',
+    default: null,
+  })
+  refereeId?: Types.ObjectId;
+
+  @Prop({ trim: true })
+  pitchReport?: string;
+
+  @Prop({
+    enum: ['batting-friendly', 'bowling-friendly', 'balanced', 'spinning', 'seaming'],
+    default: null,
+  })
+  pitchBehaviour?: string;
+
   @Prop({
     default: 0,
     min: 0,

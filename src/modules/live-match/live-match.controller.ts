@@ -394,6 +394,17 @@ export class LiveMatchController {
     }
   }
 
+  @MessagePattern('live-match.updateSquad')
+  async updateMatchSquad(@Payload() payload: { matchId: string; teamId: string; updateDto: UpdateMatchSquadDto }) {
+    try {
+      const result = await this.liveMatchService.updateMatchSquad(payload.matchId, payload.teamId, payload.updateDto);
+      return result;
+    } catch (error: any) {
+      this.logger.error('Error in updateMatchSquad', error.stack || error.message || error);
+      throw error;
+    }
+  }
+
   @MessagePattern('live-match.getRecentOvers')
   async getRecentOvers(@Payload() payload: { matchId: string; inningNumber?: number }) {
     try {
