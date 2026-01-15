@@ -41,7 +41,7 @@ export class OverSummary {
   @Prop({
     default: 0,
     min: 0,
-    max: 6,
+    max: 10,
   })
   wickets: number;
 
@@ -54,8 +54,8 @@ export class OverSummary {
   @Prop({
     type: [MongooseSchema.Types.Mixed],
     validate: {
-      validator: (v: any[]) => v.length <= 8,
-      message: 'Balls data cannot exceed 8',
+      validator: (v: any[]) => v.length <= 12,
+      message: 'Balls data cannot exceed 12',
     },
   })
   ballsData?: any[];

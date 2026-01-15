@@ -10,6 +10,7 @@ import { BattingScorecard, BattingScorecardSchema } from '../../../entities/batt
 import { BowlingScorecard, BowlingScorecardSchema } from '../../../entities/bowling-scorecard.entity';
 import { MatchSquad, MatchSquadSchema } from '../../../entities/match-squad.entity';
 import { OverSummary, OverSummarySchema } from '../../../entities/over-summary.entity';
+import { RedisPublisherService } from '../../../common/redis/redis-publisher.service';
 
 @Module({
     imports: [
@@ -24,7 +25,7 @@ import { OverSummary, OverSummarySchema } from '../../../entities/over-summary.e
             { name: OverSummary.name, schema: OverSummarySchema },
         ]),
     ],
-    providers: [ScoreEngineService],
+    providers: [ScoreEngineService, RedisPublisherService],
     exports: [ScoreEngineService],
 })
 export class ScoreEngineModule { }

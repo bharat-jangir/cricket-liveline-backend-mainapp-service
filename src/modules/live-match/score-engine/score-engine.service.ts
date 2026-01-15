@@ -10,6 +10,7 @@ import { Inning, InningDocument } from '../../../entities/inning.entity';
 import { BattingScorecard, BattingScorecardDocument } from '../../../entities/batting-scorecard.entity';
 import { BowlingScorecard, BowlingScorecardDocument } from '../../../entities/bowling-scorecard.entity';
 import { OverSummary, OverSummaryDocument } from '../../../entities/over-summary.entity';
+import { RedisPublisherService, MatchUpdatePayload } from '../../../common/redis/redis-publisher.service';
 
 @Injectable()
 export class ScoreEngineService {
@@ -23,6 +24,7 @@ export class ScoreEngineService {
         @InjectModel(BattingScorecard.name) private battingModel: Model<BattingScorecardDocument>,
         @InjectModel(BowlingScorecard.name) private bowlingModel: Model<BowlingScorecardDocument>,
         @InjectModel(OverSummary.name) private overSummaryModel: Model<OverSummaryDocument>,
+        private redisPublisher: RedisPublisherService,
     ) { }
 
     /**
@@ -62,6 +64,7 @@ export class ScoreEngineService {
             }
 
             await this.persistState(newState, event);
+            await this.publishMatchUpdate(matchId, newState, event);
             return newState.liveStatus;
 
         } catch (error) {
@@ -315,6 +318,7 @@ export class ScoreEngineService {
         
         // Save the reversed state
         await this.persistState(currentState);
+        await this.publishMatchReset(matchId, currentState);
         
         // Delete the history entry
         await this.scoreHistoryModel.findByIdAndDelete(lastHistory._id);
@@ -558,5 +562,60 @@ export class ScoreEngineService {
         
         overSummary.isMaiden = overSummary.runs === 0 && overSummary.wickets === 0;
         await overSummary.save();
+    }
+
+    private async publishMatchUpdate(matchId: string, state: MatchState, event: BallEvent): Promise<void> {
+        const payload: MatchUpdatePayload = {
+            matchId,
+            type: event.type === 'WICKET' ? 'WICKET' : event.type === 'OVER_END' ? 'OVER_END' : 'BALL',
+            timestamp: new Date(),
+            inning: {
+                number: state.inning.inningNumber,
+                totalRuns: state.inning.totalRuns,
+                totalBalls: state.inning.totalBalls,
+                wickets: state.inning.totalWickets,
+                overs: Math.floor(state.inning.totalBalls / 6) + (state.inning.totalBalls % 6) / 10,
+                runRate: state.inning.totalBalls > 0 ? (state.inning.totalRuns / state.inning.totalBalls) * 6 : 0
+            },
+            striker: state.striker ? {
+                playerId: state.striker.playerId.toString(),
+                runs: state.striker.runs,
+                balls: state.striker.balls,
+                strikeRate: state.striker.strikeRate
+            } : undefined,
+            bowler: state.bowler ? {
+                playerId: state.bowler.playerId.toString(),
+                overs: state.bowler.overs,
+                runs: state.bowler.runs,
+                wickets: state.bowler.wickets,
+                economy: state.bowler.economy
+            } : undefined,
+            lastBall: {
+                runs: event.runs || 0,
+                extras: event.extras || 0,
+                isWicket: event.type === 'WICKET',
+                ballType: event.type
+            }
+        };
+        
+        await this.redisPublisher.publishMatchUpdate(payload);
+    }
+
+    private async publishMatchReset(matchId: string, state: MatchState): Promise<void> {
+        const payload: MatchUpdatePayload = {
+            matchId,
+            type: 'MATCH_RESET',
+            timestamp: new Date(),
+            inning: {
+                number: state.inning.inningNumber,
+                totalRuns: state.inning.totalRuns,
+                totalBalls: state.inning.totalBalls,
+                wickets: state.inning.totalWickets,
+                overs: Math.floor(state.inning.totalBalls / 6) + (state.inning.totalBalls % 6) / 10,
+                runRate: state.inning.totalBalls > 0 ? (state.inning.totalRuns / state.inning.totalBalls) * 6 : 0
+            }
+        };
+        
+        await this.redisPublisher.publishMatchUpdate(payload);
     }
 }
