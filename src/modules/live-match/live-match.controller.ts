@@ -1,4 +1,4 @@
-import { Controller, Logger } from '@nestjs/common';
+import { Controller, Logger, Patch, Param, Body, Get } from '@nestjs/common';
 import { MessagePattern, Payload } from '@nestjs/microservices';
 import { LiveMatchService } from './live-match.service';
 import { UpdateLiveStatusDto } from './dto/update-live-status.dto';
@@ -14,7 +14,7 @@ import { UpdateSessionDto } from './dto/update-session.dto';
 import { ScoreEngineService } from './score-engine/score-engine.service';
 import { ScoreEventDto } from './dto/score-event.dto';
 
-@Controller()
+@Controller('live-match')
 export class LiveMatchController {
   private readonly logger = new Logger(LiveMatchController.name);
 
@@ -22,6 +22,35 @@ export class LiveMatchController {
     private readonly liveMatchService: LiveMatchService,
     private readonly scoreEngineService: ScoreEngineService
   ) { }
+
+  @Patch(':matchId/match-details')
+  @MessagePattern('live-match.updateMatchDetails')
+  async updateMatchDetails(@Param('matchId') matchId: string, @Payload() payload: any) {
+    try {
+      // Handle both HTTP and MessagePattern payloads
+      const mid = matchId || payload.matchId;
+      const dto = payload.updateDto || payload;
+
+      const result = await this.liveMatchService.updateMatchDetails(mid, dto);
+      return result.response;
+    } catch (error: any) {
+      this.logger.error('Error in updateMatchDetails', error.stack || error.message || error);
+      throw error;
+    }
+  }
+
+  @Get(':matchId/match-details')
+  @MessagePattern('live-match.getMatchDetails')
+  async getMatchDetails(@Param('matchId') matchId: string, @Payload() payload: any) {
+    try {
+      const mid = matchId || payload;
+      const result = await this.liveMatchService.getMatchDetails(mid);
+      return result.response;
+    } catch (error: any) {
+      this.logger.error('Error in getMatchDetails', error.stack || error.message || error);
+      throw error;
+    }
+  }
 
   @MessagePattern('live-match.getStatus')
   async getLiveStatus(@Payload() matchId: string) {
@@ -295,7 +324,7 @@ export class LiveMatchController {
 
       // Parse simple event string to ScoreEventDto format
       const event = this.parseSimpleEvent(payload.event);
-      
+
       // Use existing score engine with parsed event but preserve original event string
       const ballEvent: any = { ...event, matchId: payload.matchId, originalEvent: payload.event };
       const result = await this.scoreEngineService.handleEvent(payload.matchId, ballEvent);
@@ -344,7 +373,7 @@ export class LiveMatchController {
       case 'wd': return { type: 'WIDE', runs: 0, extras: 1 };
       case 'w': return { type: 'WICKET', runs: 0 };
       case 'o': return { type: 'OVER_END' };
-      default: 
+      default:
         // For unknown events, return the event string as type
         return { type: eventString };
     }

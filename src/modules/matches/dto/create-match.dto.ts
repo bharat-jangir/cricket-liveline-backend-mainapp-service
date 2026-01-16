@@ -11,7 +11,7 @@ import {
   Min,
   Max,
 } from 'class-validator';
-import { Type } from 'class-transformer';
+import { Type, Transform } from 'class-transformer';
 
 export class CreateMatchDto {
   @IsString()
@@ -125,5 +125,36 @@ export class CreateMatchDto {
   @IsNumber()
   @Min(0)
   views?: number;
+
+  @IsOptional()
+  @IsString()
+  toss?: string;
+
+  @IsOptional()
+  @IsMongoId()
+  straightUmpireId?: string;
+
+  @IsOptional()
+  @IsMongoId()
+  legUmpireId?: string;
+
+  @IsOptional()
+  @IsMongoId()
+  thirdUmpireId?: string;
+
+  @IsOptional()
+  @IsMongoId()
+  refereeId?: string;
+
+  @IsOptional()
+  @IsString()
+  pitchReport?: string;
+
+  @IsOptional()
+  @IsEnum(['batting-friendly', 'bowling-friendly', 'balanced', 'spinning', 'seaming'], {
+    message: 'pitchBehaviour must be one of the following values: batting-friendly, bowling-friendly, balanced, spinning, seaming'
+  })
+  @Transform(({ value }) => value === '' ? undefined : value)
+  pitchBehaviour?: string;
 }
 

@@ -41,6 +41,10 @@ export class MatchesService {
         venueId: new Types.ObjectId(createMatchDto.venueId),
         ...(createMatchDto.seriesId && { seriesId: new Types.ObjectId(createMatchDto.seriesId) }),
         ...(createMatchDto.tournamentId && { tournamentId: new Types.ObjectId(createMatchDto.tournamentId) }),
+        ...(createMatchDto.straightUmpireId && { straightUmpireId: new Types.ObjectId(createMatchDto.straightUmpireId) }),
+        ...(createMatchDto.legUmpireId && { legUmpireId: new Types.ObjectId(createMatchDto.legUmpireId) }),
+        ...(createMatchDto.thirdUmpireId && { thirdUmpireId: new Types.ObjectId(createMatchDto.thirdUmpireId) }),
+        ...(createMatchDto.refereeId && { refereeId: new Types.ObjectId(createMatchDto.refereeId) }),
       };
 
       const match = new this.matchModel(matchData);
@@ -334,7 +338,7 @@ export class MatchesService {
   async update(id: string, updateMatchDto: UpdateMatchDto): Promise<IResponseWithStatusCode<any>> {
     try {
       // If slug is being updated, check for duplicates
-      if (updateMatchDto.slug) {
+      if (updateMatchDto && updateMatchDto.slug) {
         const existingMatch = await this.matchModel.findOne({
           slug: updateMatchDto.slug,
           _id: { $ne: id }
@@ -367,6 +371,18 @@ export class MatchesService {
       }
       if (updateMatchDto.tournamentId) {
         updateData.tournamentId = new Types.ObjectId(updateMatchDto.tournamentId);
+      }
+      if (updateMatchDto.straightUmpireId) {
+        updateData.straightUmpireId = new Types.ObjectId(updateMatchDto.straightUmpireId);
+      }
+      if (updateMatchDto.legUmpireId) {
+        updateData.legUmpireId = new Types.ObjectId(updateMatchDto.legUmpireId);
+      }
+      if (updateMatchDto.thirdUmpireId) {
+        updateData.thirdUmpireId = new Types.ObjectId(updateMatchDto.thirdUmpireId);
+      }
+      if (updateMatchDto.refereeId) {
+        updateData.refereeId = new Types.ObjectId(updateMatchDto.refereeId);
       }
 
       const match = await this.matchModel.findByIdAndUpdate(

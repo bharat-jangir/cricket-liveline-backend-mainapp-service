@@ -53,6 +53,12 @@ export class MatchSquad {
     ref: 'Player',
   })
   wicketKeeperId?: Types.ObjectId;
+
+  @Prop({
+    type: Types.ObjectId,
+    ref: 'Player',
+  })
+  impactPlayerId?: Types.ObjectId;
 }
 
 export const MatchSquadSchema = SchemaFactory.createForClass(MatchSquad);

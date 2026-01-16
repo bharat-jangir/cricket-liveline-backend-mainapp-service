@@ -1,4 +1,4 @@
-import { IsNotEmpty, IsArray, IsMongoId, IsOptional, ArrayMinSize, ArrayMaxSize } from 'class-validator';
+import { IsNotEmpty, IsArray, IsMongoId, IsOptional, ArrayMinSize, ArrayMaxSize, ValidateIf } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class UpdateMatchSquadDto {
@@ -15,15 +15,23 @@ export class UpdateMatchSquadDto {
   bench?: string[];
 
   @IsOptional()
+  @ValidateIf((o, v) => v !== null)
   @IsMongoId()
-  captainId?: string;
+  captainId?: string | null;
 
   @IsOptional()
+  @ValidateIf((o, v) => v !== null)
   @IsMongoId()
-  viceCaptainId?: string;
+  viceCaptainId?: string | null;
 
   @IsOptional()
+  @ValidateIf((o, v) => v !== null)
   @IsMongoId()
-  wicketKeeperId?: string;
+  wicketKeeperId?: string | null;
+
+  @IsOptional()
+  @ValidateIf((o, v) => v !== null)
+  @IsMongoId()
+  impactPlayerId?: string | null;
 }
 

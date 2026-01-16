@@ -109,6 +109,131 @@ export class LiveMatchService {
     return { valid: true };
   }
 
+  // Update match details (toss, umpires, pitch conditions)
+  async updateMatchDetails(matchId: string, updateDto: any): Promise<IResponseWithStatusCode<any>> {
+    try {
+      if (!Types.ObjectId.isValid(matchId)) {
+        return this.responseService.error(
+          'Invalid match ID',
+          'INVALID_MATCH_ID',
+          'Match ID must be a valid MongoDB ObjectId',
+          undefined,
+          null,
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+
+      const matchObjectId = new Types.ObjectId(matchId);
+
+      // Convert umpire IDs to ObjectIds if provided
+      const updateData: any = {};
+
+      if (updateDto.toss) {
+        updateData.toss = updateDto.toss;
+      }
+
+      if (updateDto.officials) {
+        updateData.officials = {};
+        if (updateDto.officials.umpire1Id && Types.ObjectId.isValid(updateDto.officials.umpire1Id)) {
+          updateData.officials.umpire1Id = new Types.ObjectId(updateDto.officials.umpire1Id);
+        }
+        if (updateDto.officials.umpire2Id && Types.ObjectId.isValid(updateDto.officials.umpire2Id)) {
+          updateData.officials.umpire2Id = new Types.ObjectId(updateDto.officials.umpire2Id);
+        }
+        if (updateDto.officials.thirdUmpireId && Types.ObjectId.isValid(updateDto.officials.thirdUmpireId)) {
+          updateData.officials.thirdUmpireId = new Types.ObjectId(updateDto.officials.thirdUmpireId);
+        }
+        if (updateDto.officials.refereeId && Types.ObjectId.isValid(updateDto.officials.refereeId)) {
+          updateData.officials.refereeId = new Types.ObjectId(updateDto.officials.refereeId);
+        }
+      }
+
+      if (updateDto.conditions) {
+        updateData.conditions = updateDto.conditions;
+      }
+
+      if (updateDto.headToHead) {
+        updateData.headToHead = updateDto.headToHead;
+      }
+
+      if (updateDto.teamForm) {
+        updateData.teamForm = updateDto.teamForm;
+      }
+
+      const matchDetails = await this.matchDetailsModel.findOneAndUpdate(
+        { matchId: matchObjectId },
+        updateData,
+        { new: true, upsert: true }
+      )
+        .populate('officials.umpire1Id', 'name')
+        .populate('officials.umpire2Id', 'name')
+        .populate('officials.thirdUmpireId', 'name')
+        .populate('officials.refereeId', 'name')
+        .lean();
+
+      return this.responseService.successWithSingle(
+        matchDetails,
+        'Match details updated successfully',
+        'MATCH_DETAILS_UPDATED',
+        'Match details updated successfully',
+        undefined,
+        HttpStatus.OK,
+      );
+    } catch (error) {
+      return this.responseService.error(
+        'Failed to update match details',
+        'MATCH_DETAILS_UPDATE_FAILED',
+        error.message,
+        undefined,
+        null,
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
+  // Get match details
+  async getMatchDetails(matchId: string): Promise<IResponseWithStatusCode<any>> {
+    try {
+      if (!Types.ObjectId.isValid(matchId)) {
+        return this.responseService.error(
+          'Invalid match ID',
+          'INVALID_MATCH_ID',
+          'Match ID must be a valid MongoDB ObjectId',
+          undefined,
+          null,
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+
+      const matchDetails = await this.matchDetailsModel
+        .findOne({ matchId: new Types.ObjectId(matchId) })
+        .populate('officials.umpire1Id', 'name')
+        .populate('officials.umpire2Id', 'name')
+        .populate('officials.thirdUmpireId', 'name')
+        .populate('officials.refereeId', 'name')
+        .populate('toss.winnerId', 'name shortName')
+        .lean();
+
+      return this.responseService.successWithSingle(
+        matchDetails || {},
+        'Match details retrieved successfully',
+        'MATCH_DETAILS_RETRIEVED',
+        'Match details retrieved successfully',
+        undefined,
+        HttpStatus.OK,
+      );
+    } catch (error) {
+      return this.responseService.error(
+        'Failed to fetch match details',
+        'MATCH_DETAILS_FETCH_FAILED',
+        error.message,
+        undefined,
+        null,
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
   // Get live match status
   async getLiveStatus(matchId: string): Promise<IResponseWithStatusCode<any>> {
     try {
@@ -597,6 +722,7 @@ export class LiveMatchService {
         .populate('captainId', 'name fullName')
         .populate('viceCaptainId', 'name fullName')
         .populate('wicketKeeperId', 'name fullName')
+        .populate('impactPlayerId', 'name fullName')
         .lean();
 
       return this.responseService.successWithSingle(
@@ -658,14 +784,28 @@ export class LiveMatchService {
           .filter(id => Types.ObjectId.isValid(id))
           .map(id => new Types.ObjectId(id));
       }
-      if (updateDto.captainId && Types.ObjectId.isValid(updateDto.captainId)) {
+      if (updateDto.captainId === null) {
+        updateData.captainId = null;
+      } else if (updateDto.captainId && Types.ObjectId.isValid(updateDto.captainId)) {
         updateData.captainId = new Types.ObjectId(updateDto.captainId);
       }
-      if (updateDto.viceCaptainId && Types.ObjectId.isValid(updateDto.viceCaptainId)) {
+
+      if (updateDto.viceCaptainId === null) {
+        updateData.viceCaptainId = null;
+      } else if (updateDto.viceCaptainId && Types.ObjectId.isValid(updateDto.viceCaptainId)) {
         updateData.viceCaptainId = new Types.ObjectId(updateDto.viceCaptainId);
       }
-      if (updateDto.wicketKeeperId && Types.ObjectId.isValid(updateDto.wicketKeeperId)) {
+
+      if (updateDto.wicketKeeperId === null) {
+        updateData.wicketKeeperId = null;
+      } else if (updateDto.wicketKeeperId && Types.ObjectId.isValid(updateDto.wicketKeeperId)) {
         updateData.wicketKeeperId = new Types.ObjectId(updateDto.wicketKeeperId);
+      }
+
+      if (updateDto.impactPlayerId === null) {
+        updateData.impactPlayerId = null;
+      } else if (updateDto.impactPlayerId && Types.ObjectId.isValid(updateDto.impactPlayerId)) {
+        updateData.impactPlayerId = new Types.ObjectId(updateDto.impactPlayerId);
       }
 
       const squad = await this.matchSquadModel.findOneAndUpdate(
@@ -679,6 +819,7 @@ export class LiveMatchService {
         .populate('captainId', 'name fullName')
         .populate('viceCaptainId', 'name fullName')
         .populate('wicketKeeperId', 'name fullName')
+        .populate('impactPlayerId', 'name fullName')
         .lean();
 
       return this.responseService.successWithSingle(

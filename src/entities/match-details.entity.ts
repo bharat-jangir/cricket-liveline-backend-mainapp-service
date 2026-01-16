@@ -93,6 +93,30 @@ export class MatchDetails {
     pitchReport?: string;
   };
 
+  @Prop({
+    type: {
+      team1Wins: { type: Number, default: 0 },
+      team2Wins: { type: Number, default: 0 },
+    },
+    required: false,
+  })
+  headToHead?: {
+    team1Wins?: number;
+    team2Wins?: number;
+  };
+
+  @Prop({
+    type: {
+      team1Form: { type: String, trim: true },
+      team2Form: { type: String, trim: true },
+    },
+    required: false,
+  })
+  teamForm?: {
+    team1Form?: string;
+    team2Form?: string;
+  };
+
   @Prop({ default: false })
   drsAvailable: boolean;
 
