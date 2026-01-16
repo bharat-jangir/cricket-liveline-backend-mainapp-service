@@ -36,7 +36,7 @@ export class ScoreEngineService {
             const currentState = await this.loadState(matchObjectId);
 
             if (event.type === 'UNDO') {
-                return await this.processUndo(matchId);
+                return await this.processUndo(matchId, event);
             }
 
             // Save snapshot of current state before applying changes
@@ -49,6 +49,7 @@ export class ScoreEngineService {
                 case 'NO_BALL':
                 case 'BYE':
                 case 'LEG_BYE':
+                case 'PENALTY':
                     newState = await this.processBall(currentState, event);
                     break;
                 case 'WICKET':
@@ -85,9 +86,9 @@ export class ScoreEngineService {
         const liveStatus = await this.liveStatusModel.findOne({ matchId }).exec();
         if (!liveStatus) throw new NotFoundException('Match Live Status not found');
 
-        const inning = await this.inningModel.findOne({ 
-            matchId, 
-            inningNumber: liveStatus.currentInning 
+        const inning = await this.inningModel.findOne({
+            matchId,
+            inningNumber: liveStatus.currentInning
         }).exec();
         if (!inning) throw new NotFoundException('Active Inning not found');
 
@@ -112,12 +113,13 @@ export class ScoreEngineService {
         const { inning, striker, nonStriker, bowler } = state;
         const runsScored = event.runs || 0;
         const extras = event.extras || 0;
-        
+
         const isWide = event.type === 'WIDE';
         const isNoBall = event.type === 'NO_BALL';
         const isBye = event.type === 'BYE';
         const isLegBye = event.type === 'LEG_BYE';
-        const isLegalBall = !isWide && !isNoBall;
+        const isPenalty = event.type === 'PENALTY';
+        const isLegalBall = !isWide && !isNoBall && !isPenalty;
 
         // 1. Inning Updates
         inning.totalRuns += (runsScored + extras);
@@ -126,10 +128,11 @@ export class ScoreEngineService {
         if (isNoBall) inning.noBalls += (extras || 1);
         if (isBye) inning.byes += runsScored;
         if (isLegBye) inning.legByes += runsScored;
+        if (isPenalty) inning.penalties += extras;
         inning.extras += extras;
 
         // 2. Update striker stats in BattingScorecard
-        if (striker && !isWide) {
+        if (striker && !isWide && !isPenalty) {
             if (!isBye && !isLegBye) {
                 striker.runs += runsScored;
                 if (runsScored === 4) striker.fours += 1;
@@ -139,7 +142,7 @@ export class ScoreEngineService {
                 striker.balls += 1;
                 striker.strikeRate = striker.balls > 0 ? (striker.runs / striker.balls) * 100 : 0;
             }
-        } else if (!striker && state.liveStatus.currentStrikerId && !isWide) {
+        } else if (!striker && state.liveStatus.currentStrikerId && !isWide && !isPenalty) {
             // Create striker if doesn't exist
             const newStriker = await this.battingModel.create({
                 matchId: inning.matchId,
@@ -162,22 +165,40 @@ export class ScoreEngineService {
                 const remainingBalls = bowler.balls % 6;
                 bowler.overs = parseFloat(`${completedOvers}.${remainingBalls}`);
             }
-            if (!isBye && !isLegBye) {
-                bowler.runs += (runsScored + extras);
+            const bowlerRunsInBall = (!isBye && !isLegBye && !isPenalty) ? (runsScored + extras) : 0;
+            if (bowlerRunsInBall === 0) {
+                bowler.dots = (bowler.dots || 0) + 1;
+            }
+            if (!isBye && !isLegBye && !isPenalty) {
+                bowler.runs += bowlerRunsInBall;
+                if (runsScored === 4) bowler.fours = (bowler.fours || 0) + 1;
+                if (runsScored === 6) bowler.sixes = (bowler.sixes || 0) + 1;
             }
             if (bowler.overs > 0) {
                 bowler.economy = bowler.runs / bowler.overs;
             }
+            if (bowler.wickets > 0) {
+                bowler.average = bowler.runs / bowler.wickets;
+                bowler.strikeRate = bowler.balls / bowler.wickets;
+            } else {
+                bowler.average = 0;
+                bowler.strikeRate = 0;
+            }
         } else if (!bowler && state.liveStatus.currentBowlerId) {
             // Create bowler if doesn't exist
+            const bowlerRunsInBall = !isBye && !isLegBye && !isPenalty ? (runsScored + extras) : 0;
             const newBowler = await this.bowlingModel.create({
                 matchId: inning.matchId,
                 inningId: inning._id,
                 playerId: state.liveStatus.currentBowlerId,
                 bowlingOrder: 1,
                 balls: isLegalBall ? 1 : 0,
-                runs: !isBye && !isLegBye ? (runsScored + extras) : 0,
-                overs: isLegalBall ? 0.1 : 0
+                runs: bowlerRunsInBall,
+                dots: bowlerRunsInBall === 0 ? 1 : 0,
+                fours: runsScored === 4 && (!isBye && !isLegBye && !isPenalty) ? 1 : 0,
+                sixes: runsScored === 6 && (!isBye && !isLegBye && !isPenalty) ? 1 : 0,
+                overs: isLegalBall ? 0.1 : 0,
+                economy: isLegalBall ? bowlerRunsInBall / 0.1 : 0
             });
             state.bowler = newBowler as any;
         }
@@ -204,7 +225,7 @@ export class ScoreEngineService {
                 striker.balls += 1;
                 striker.strikeRate = striker.balls > 0 ? (striker.runs / striker.balls) * 100 : 0;
             }
-            
+
             // Mark player as out
             striker.isOut = true;
             striker.dismissalType = event.wicketType || 'bowled';
@@ -253,11 +274,11 @@ export class ScoreEngineService {
             const temp = state.striker;
             state.striker = state.nonStriker;
             state.nonStriker = temp;
-            
+
             // Update both players' isOnStrike flags
             state.striker.isOnStrike = true;
             state.nonStriker.isOnStrike = false;
-            
+
             // Update LiveMatchStatus IDs
             if (state.liveStatus) {
                 state.liveStatus.currentStrikerId = state.striker.playerId;
@@ -303,26 +324,26 @@ export class ScoreEngineService {
         });
     }
 
-    private async processUndo(matchId: string): Promise<any> {
+    private async processUndo(matchId: string, event?: BallEvent): Promise<any> {
         const lastHistory = await this.scoreHistoryModel.findOne({ matchId: new Types.ObjectId(matchId) }).sort({ createdAt: -1 });
         if (!lastHistory) throw new BadRequestException('No history found to undo');
 
         const lastEvent = lastHistory.event;
         const currentState = await this.loadState(new Types.ObjectId(matchId));
-        
+
         // Validate undo is possible
         this.validateUndoOperation(currentState, lastEvent);
-        
+
         // Reverse the last ball based on event type
         await this.reverseBallEvent(currentState, lastEvent);
-        
-        // Save the reversed state
-        await this.persistState(currentState);
+
+        // Save the reversed state with the undo event for confirmation (sets currentBall in DB)
+        await this.persistState(currentState, event);
         await this.publishMatchReset(matchId, currentState);
-        
+
         // Delete the history entry
         await this.scoreHistoryModel.findByIdAndDelete(lastHistory._id);
-        
+
         return currentState.liveStatus;
     }
 
@@ -330,24 +351,24 @@ export class ScoreEngineService {
         // Prevent negative values
         const runsScored = event.runs || 0;
         const extras = event.extras || 0;
-        
+
         if (state.inning.totalRuns < (runsScored + extras)) {
             throw new BadRequestException('Cannot undo: Would result in negative total runs');
         }
-        
+
         if (event.type === 'WICKET' && state.inning.totalWickets <= 0) {
             throw new BadRequestException('Cannot undo: No wickets to reverse');
         }
-        
+
         if (event.type === 'WIDE' && state.inning.wides < (extras || 1)) {
             throw new BadRequestException('Cannot undo: Insufficient wides to reverse');
         }
-        
+
         if (event.type === 'NO_BALL' && state.inning.noBalls < (extras || 1)) {
             throw new BadRequestException('Cannot undo: Insufficient no-balls to reverse');
         }
-        
-        const isLegalBall = event.type !== 'WIDE' && event.type !== 'NO_BALL';
+
+        const isLegalBall = event.type !== 'WIDE' && event.type !== 'NO_BALL' && event.type !== 'PENALTY';
         if (isLegalBall && state.inning.totalBalls <= 0) {
             throw new BadRequestException('Cannot undo: No balls to reverse');
         }
@@ -357,12 +378,13 @@ export class ScoreEngineService {
         const { inning, striker, nonStriker, bowler } = state;
         const runsScored = event.runs || 0;
         const extras = event.extras || 0;
-        
+
         const isWide = event.type === 'WIDE';
         const isNoBall = event.type === 'NO_BALL';
         const isBye = event.type === 'BYE';
         const isLegBye = event.type === 'LEG_BYE';
-        const isLegalBall = !isWide && !isNoBall;
+        const isPenalty = event.type === 'PENALTY';
+        const isLegalBall = !isWide && !isNoBall && !isPenalty;
         const isWicket = event.type === 'WICKET';
         const isOverEnd = event.type === 'OVER_END';
 
@@ -379,6 +401,7 @@ export class ScoreEngineService {
         if (isNoBall) inning.noBalls = Math.max(0, inning.noBalls - (extras || 1));
         if (isBye) inning.byes = Math.max(0, inning.byes - runsScored);
         if (isLegBye) inning.legByes = Math.max(0, inning.legByes - runsScored);
+        if (isPenalty) inning.penalties = Math.max(0, inning.penalties - extras);
         inning.extras = Math.max(0, inning.extras - extras);
         if (isWicket) {
             inning.totalWickets = Math.max(0, inning.totalWickets - 1);
@@ -388,8 +411,15 @@ export class ScoreEngineService {
             }
         }
 
-        // 2. Reverse Striker Updates (BEFORE strike rotation)
-        if (striker && !isWide) {
+        // 2. Reverse Strike Rotation (BEFORE updating striker stats)
+        // This ensures the correct striker is selected for stat reversal if they rotated on an odd run
+        if (!isWide && !isWicket && runsScored % 2 !== 0) {
+            this.swapStrike(state);
+        }
+
+        // 3. Reverse Striker Updates
+        if (state.striker && !isWide && !isPenalty) {
+            const striker = state.striker;
             if (!isBye && !isLegBye && !isWicket) {
                 striker.runs = Math.max(0, striker.runs - runsScored);
                 if (runsScored === 4) striker.fours = Math.max(0, striker.fours - 1);
@@ -407,11 +437,6 @@ export class ScoreEngineService {
             }
         }
 
-        // 3. Reverse Strike Rotation (AFTER updating striker stats)
-        if (!isWide && !isWicket && runsScored % 2 !== 0) {
-            this.swapStrike(state);
-        }
-
         // 4. Reverse Bowler Updates
         if (bowler) {
             if (isLegalBall || (isNoBall && event.type === 'WICKET')) {
@@ -420,8 +445,14 @@ export class ScoreEngineService {
                 const remainingBalls = bowler.balls % 6;
                 bowler.overs = parseFloat(`${completedOvers}.${remainingBalls}`);
             }
-            if (!isBye && !isLegBye) {
-                bowler.runs = Math.max(0, bowler.runs - (runsScored + extras));
+            const bowlerRunsInBall = (!isBye && !isLegBye && !isPenalty) ? (runsScored + extras) : 0;
+            if (bowlerRunsInBall === 0) {
+                bowler.dots = Math.max(0, (bowler.dots || 0) - 1);
+            }
+            if (!isBye && !isLegBye && !isPenalty) {
+                bowler.runs = Math.max(0, bowler.runs - bowlerRunsInBall);
+                if (runsScored === 4) bowler.fours = Math.max(0, (bowler.fours || 0) - 1);
+                if (runsScored === 6) bowler.sixes = Math.max(0, (bowler.sixes || 0) - 1);
             }
             if (isWicket) {
                 bowler.wickets = Math.max(0, bowler.wickets - 1);
@@ -432,6 +463,27 @@ export class ScoreEngineService {
             } else {
                 bowler.economy = 0;
             }
+
+            if (bowler.wickets > 0) {
+                bowler.average = bowler.runs / bowler.wickets;
+                bowler.strikeRate = bowler.balls / bowler.wickets;
+            } else {
+                bowler.average = 0;
+                bowler.strikeRate = 0;
+            }
+
+            // Check if we are undoing the end of a maiden over
+            if (isLegalBall && (inning.totalBalls + 1) > 0 && (inning.totalBalls + 1) % 6 === 0) {
+                const overNumber = Math.floor((inning.totalBalls + 1) / 6);
+                const overSummary = await this.overSummaryModel.findOne({
+                    matchId: inning.matchId,
+                    inningId: inning._id,
+                    overNumber: overNumber
+                });
+                if (overSummary && overSummary.isMaiden) {
+                    bowler.maidens = Math.max(0, (bowler.maidens || 0) - 1);
+                }
+            }
         }
 
         // 5. Remove last ball from over summary
@@ -440,11 +492,11 @@ export class ScoreEngineService {
 
     private async removeLastBallFromOverSummary(state: MatchState): Promise<void> {
         if (!state.bowler) return;
-        
+
         // Calculate which over the undone ball belonged to
         const ballsBeforeUndo = state.inning.totalBalls + 1;
         const overNumber = Math.ceil(ballsBeforeUndo / 6);
-        
+
         const overSummary = await this.overSummaryModel.findOne({
             matchId: state.inning.matchId,
             inningId: state.inning._id,
@@ -454,7 +506,7 @@ export class ScoreEngineService {
         if (overSummary && overSummary.ballsData.length > 0) {
             // Remove last ball
             overSummary.ballsData.pop();
-            
+
             // If no balls left, delete the over summary
             if (overSummary.ballsData.length === 0) {
                 await this.overSummaryModel.findByIdAndDelete(overSummary._id);
@@ -463,7 +515,7 @@ export class ScoreEngineService {
                 overSummary.runs = 0;
                 overSummary.wickets = 0;
                 overSummary.extras = 0;
-                
+
                 // Note: This is simplified. In production, you might want to
                 // recalculate from the actual ball data or store more details
                 overSummary.isMaiden = overSummary.runs === 0 && overSummary.wickets === 0;
@@ -484,21 +536,23 @@ export class ScoreEngineService {
         if (liveStatus) {
             const currentOver = Math.floor(inning.totalBalls / 6);
             const currentBall = inning.totalBalls % 6;
-            
+
             liveStatus.overs = `${currentOver}.${currentBall}`;
             liveStatus.score = `${inning.totalRuns}/${inning.totalWickets}`;
             liveStatus.balls = inning.totalBalls;
             liveStatus.currentOver = currentOver;
-            
+
             // Always set currentBall to the original event string that was sent
+            // For UNDO events, set it to 'confirming check' as requested
             if (event) {
-                liveStatus.currentBall = (event as any).originalEvent || event.type;
+                const eventVal = (event as any).originalEvent || event.type;
+                liveStatus.currentBall = eventVal === 'UNDO' ? 'confirming' : eventVal;
             }
-            
+
             if (inning.lastWicket) {
                 liveStatus.lastWicket = inning.lastWicket;
             }
-            
+
             await liveStatus.save();
         }
 
@@ -508,59 +562,88 @@ export class ScoreEngineService {
         // Save individual scorecards if they exist
         if (state.striker) await state.striker.save();
         if (state.nonStriker) await state.nonStriker.save();
+
+        // Check for maiden over completion (6 legal balls)
+        // Must do this BEFORE saving bowler so the maiden is persisted
+        const isLegalBall = event && !['WIDE', 'NO_BALL', 'PENALTY', 'OVER_END', 'UNDO'].includes(event.type);
+        if (isLegalBall && inning.totalBalls > 0 && inning.totalBalls % 6 === 0 && state.bowler) {
+            const overNumber = Math.floor(inning.totalBalls / 6);
+            const overSummary = await this.overSummaryModel.findOne({
+                matchId: inning.matchId,
+                inningId: inning._id,
+                overNumber: overNumber
+            });
+            if (overSummary && overSummary.isMaiden) {
+                state.bowler.maidens = (state.bowler.maidens || 0) + 1;
+            }
+        }
+
         if (state.bowler) await state.bowler.save();
     }
 
     private async updateOverSummary(state: MatchState) {
         if (!state.bowler) return;
-        
-        const currentOver = Math.ceil(state.inning.totalBalls / 6);
-        
-        // Get ball representation
+
+        const { inning, bowler } = state;
         const lastBall = state.currentOverBalls[state.currentOverBalls.length - 1];
+        if (!lastBall) return;
+
+        const currentOver = Math.ceil(inning.totalBalls / 6) || 1;
+
+        // Get ball representation
         let ballValue = lastBall.runs.toString();
         if (lastBall.isWicket) ballValue = 'W';
-        if (lastBall.isWide) ballValue = 'wd';
-        if (lastBall.isNoBall) ballValue = 'nb';
-        if (lastBall.type === 'BYE') ballValue = 'b';
-        if (lastBall.type === 'LEG_BYE') ballValue = 'lb';
+        if (lastBall.isWide) ballValue = (lastBall.runs > 0) ? `${lastBall.runs}wd` : 'wd';
+        if (lastBall.isNoBall) ballValue = (lastBall.runs > 0) ? `${lastBall.runs}nb` : 'nb';
+        if (lastBall.type === 'BYE') ballValue = lastBall.runs > 0 ? `b${lastBall.runs}` : 'b';
+        if (lastBall.type === 'LEG_BYE') ballValue = lastBall.runs > 0 ? `lb${lastBall.runs}` : 'lb';
+        if (lastBall.type === 'PENALTY') ballValue = `p${lastBall.extras}`;
 
         // Find existing over summary or create new one
         let overSummary = await this.overSummaryModel.findOne({
-            matchId: state.inning.matchId,
-            inningId: state.inning._id,
+            matchId: inning.matchId,
+            inningId: inning._id,
             overNumber: currentOver
         });
 
         if (!overSummary) {
             overSummary = await this.overSummaryModel.create({
-                matchId: state.inning.matchId,
-                inningId: state.inning._id,
+                matchId: inning.matchId,
+                inningId: inning._id,
                 overNumber: currentOver,
-                bowlerId: state.bowler._id,
+                bowlerId: bowler._id,
                 runs: 0,
                 wickets: 0,
                 extras: 0,
                 ballsData: [],
-                isMaiden: false
+                isMaiden: true // Start as true, will flip to false if runs conceded
             });
         }
 
-        // Add ball to ballsData and recalculate totals
+        // Add ball to ballsData
         overSummary.ballsData.push(ballValue);
-        
-        // Recalculate totals from all balls in this over
-        overSummary.runs = 0;
-        overSummary.wickets = 0;
-        overSummary.extras = 0;
-        
-        state.currentOverBalls.forEach(ball => {
-            overSummary.runs += ball.runs + ball.extras;
-            if (ball.isWicket) overSummary.wickets += 1;
-            if (ball.extras > 0) overSummary.extras += ball.extras;
-        });
-        
-        overSummary.isMaiden = overSummary.runs === 0 && overSummary.wickets === 0;
+
+        // Update totals
+        const runsScored = lastBall.runs || 0;
+        const extras = lastBall.extras || 0;
+        const totalRunsInBall = runsScored + extras;
+
+        overSummary.runs += totalRunsInBall;
+        if (lastBall.isWicket) overSummary.wickets += 1;
+        if (extras > 0) overSummary.extras += extras;
+
+        // Maiden check: Any runs conceded by bowler (Bat runs, Wides, No-balls)?
+        // Byes, Leg-byes and Penalties don't break a maiden.
+        const isBye = lastBall.type === 'BYE';
+        const isLegBye = lastBall.type === 'LEG_BYE';
+        const isPenalty = lastBall.type === 'PENALTY';
+
+        const bowlerConcededRuns = (!isBye && !isLegBye && !isPenalty) ? totalRunsInBall : 0;
+
+        if (bowlerConcededRuns > 0) {
+            overSummary.isMaiden = false;
+        }
+
         await overSummary.save();
     }
 
@@ -597,7 +680,7 @@ export class ScoreEngineService {
                 ballType: event.type
             }
         };
-        
+
         await this.redisPublisher.publishMatchUpdate(payload);
     }
 
@@ -615,7 +698,7 @@ export class ScoreEngineService {
                 runRate: state.inning.totalBalls > 0 ? (state.inning.totalRuns / state.inning.totalBalls) * 6 : 0
             }
         };
-        
+
         await this.redisPublisher.publishMatchUpdate(payload);
     }
 }

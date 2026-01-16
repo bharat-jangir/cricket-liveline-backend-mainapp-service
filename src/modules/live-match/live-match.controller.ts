@@ -361,10 +361,25 @@ export class LiveMatchController {
       return { type: 'RUN', runs: 0 };
     }
 
-    if (/^lb[1-4]$/.test(event)) {
+    if (/^lb[1-6]$/.test(event)) {
       return {
         type: 'LEG_BYE',
         runs: parseInt(event.substring(2))
+      };
+    }
+
+    if (/^b[1-6]$/.test(event)) {
+      return {
+        type: 'BYE',
+        runs: parseInt(event.substring(1))
+      };
+    }
+
+    if (/^p[1-9]$/.test(event)) {
+      return {
+        type: 'PENALTY',
+        runs: 0,
+        extras: parseInt(event.substring(1))
       };
     }
 
