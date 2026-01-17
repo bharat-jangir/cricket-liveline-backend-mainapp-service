@@ -160,6 +160,10 @@ export class LiveMatchService {
         updateData.teamForm = updateDto.teamForm;
       }
 
+      if (updateDto.venueId && Types.ObjectId.isValid(updateDto.venueId)) {
+        updateData.venueId = new Types.ObjectId(updateDto.venueId);
+      }
+
       const matchDetails = await this.matchDetailsModel.findOneAndUpdate(
         { matchId: matchObjectId },
         updateData,
@@ -169,6 +173,7 @@ export class LiveMatchService {
         .populate('officials.umpire2Id', 'name')
         .populate('officials.thirdUmpireId', 'name')
         .populate('officials.refereeId', 'name')
+        .populate('venueId', 'name city country')
         .lean();
 
       return this.responseService.successWithSingle(
@@ -212,6 +217,7 @@ export class LiveMatchService {
         .populate('officials.thirdUmpireId', 'name')
         .populate('officials.refereeId', 'name')
         .populate('toss.winnerId', 'name shortName')
+        .populate('venueId', 'name city country')
         .lean();
 
       return this.responseService.successWithSingle(

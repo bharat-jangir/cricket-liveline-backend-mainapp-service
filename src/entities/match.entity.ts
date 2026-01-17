@@ -79,12 +79,6 @@ export class Match {
   })
   teamBId: Types.ObjectId;
 
-  @Prop({
-    type: Types.ObjectId,
-    ref: 'Venue',
-    required: true,
-  })
-  venueId: Types.ObjectId;
 
   @Prop({ required: true })
   matchDate: Date;
@@ -197,6 +191,5 @@ MatchSchema.index({ slug: 1 });
 MatchSchema.index({ status: 1, matchDate: -1 });
 MatchSchema.index({ tournamentId: 1, matchDate: -1 });
 MatchSchema.index({ teamAId: 1, teamBId: 1, status: 1 });
-MatchSchema.index({ venueId: 1, matchDate: -1 });
 MatchSchema.index({ seriesId: 1, matchDate: -1 });
 

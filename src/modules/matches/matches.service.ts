@@ -38,7 +38,7 @@ export class MatchesService {
         ...createMatchDto,
         teamAId: new Types.ObjectId(createMatchDto.teamAId),
         teamBId: new Types.ObjectId(createMatchDto.teamBId),
-        venueId: new Types.ObjectId(createMatchDto.venueId),
+        ...(createMatchDto.venueId && { venueId: new Types.ObjectId(createMatchDto.venueId) }), // Backwards compatibility if sent
         ...(createMatchDto.seriesId && { seriesId: new Types.ObjectId(createMatchDto.seriesId) }),
         ...(createMatchDto.tournamentId && { tournamentId: new Types.ObjectId(createMatchDto.tournamentId) }),
         ...(createMatchDto.straightUmpireId && { straightUmpireId: new Types.ObjectId(createMatchDto.straightUmpireId) }),
@@ -161,15 +161,6 @@ export class MatchesService {
         });
       }
 
-      if (venueId) {
-        const venueObjectId = Types.ObjectId.isValid(venueId) ? new Types.ObjectId(venueId) : null;
-        andConditions.push({
-          $or: [
-            ...(venueObjectId ? [{ venueId: venueObjectId }] : []),
-            { venueId: venueId },
-          ],
-        });
-      }
 
       // Combine $or conditions with $and if needed
       if (andConditions.length > 0) {
@@ -192,7 +183,6 @@ export class MatchesService {
         .find(filter)
         .populate('teamAId', 'name shortName code logo')
         .populate('teamBId', 'name shortName code logo')
-        .populate('venueId', 'name city country')
         .populate('seriesId', 'name shortName'); // Always populate seriesId if it exists
 
       // Don't populate tournamentId - Tournament model may not be registered
@@ -200,10 +190,30 @@ export class MatchesService {
       //   matchQuery.populate('tournamentId', 'name shortName');
       // }
 
-      const [matches, total] = await Promise.all([
+      const [matchesList, total] = await Promise.all([
         matchQuery.sort({ matchDate: -1 }).skip(skip).limit(limit).lean(),
         this.matchModel.countDocuments(filter),
       ]);
+
+      const matches = matchesList as any[];
+
+      // Fetch match details for these matches to get venues
+      if (matches.length > 0) {
+        const matchIds = matches.map(m => m._id);
+        const details = await this.matchDetailsModel
+          .find({ matchId: { $in: matchIds } })
+          .populate('venueId', 'name city country')
+          .lean();
+
+        const detailsMap = new Map(details.map(d => [d.matchId.toString(), d]));
+
+        matches.forEach(m => {
+          const d = detailsMap.get(m._id.toString());
+          if (d && d?.venueId) {
+            m.venue = d.venueId;
+          }
+        });
+      }
 
       return this.responseService.successWithPagination(
         matches,
@@ -238,12 +248,12 @@ export class MatchesService {
         this.matchModel
           .findById(id)
           .populate('teamAId', 'name shortName code logo')
-          .populate('teamBId', 'name shortName code logo')
-          .populate('venueId', 'name city country'),
+          .populate('teamBId', 'name shortName code logo'),
         this.matchDetailsModel
           .findOne({ matchId: new Types.ObjectId(id) })
-          .select('toss')
+          .select('toss venueId')
           .populate('toss.winnerId', 'name shortName code logo')
+          .populate('venueId', 'name city country')
           .lean()
       ]);
 
@@ -261,9 +271,10 @@ export class MatchesService {
       // Convert to plain object and ensure teams are populated
       let match = (matchDoc.toObject ? matchDoc.toObject() : matchDoc) as any;
 
-      // Merge toss from matchDetails if it exists
-      if (matchDetails && matchDetails.toss) {
-        match.toss = matchDetails.toss;
+      // Merge toss and venueId from matchDetails if they exist
+      if (matchDetails) {
+        if (matchDetails.toss) match.toss = matchDetails.toss;
+        if (matchDetails.venueId) match.venueId = matchDetails.venueId;
       }
 
       // Always manually populate teams to ensure they're objects (fallback)
@@ -364,7 +375,7 @@ export class MatchesService {
         updateData.teamBId = new Types.ObjectId(updateMatchDto.teamBId);
       }
       if (updateMatchDto.venueId) {
-        updateData.venueId = new Types.ObjectId(updateMatchDto.venueId);
+        // updateData.venueId = new Types.ObjectId(updateMatchDto.venueId);
       }
       if (updateMatchDto.seriesId) {
         updateData.seriesId = new Types.ObjectId(updateMatchDto.seriesId);
@@ -406,7 +417,6 @@ export class MatchesService {
       const populatePaths: any[] = [
         { path: 'teamAId', select: 'name shortName code logo' },
         { path: 'teamBId', select: 'name shortName code logo' },
-        { path: 'venueId', select: 'name city country' },
       ];
 
       if (match.seriesId) {

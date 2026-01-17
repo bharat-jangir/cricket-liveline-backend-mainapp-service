@@ -14,6 +14,13 @@ export class MatchDetails {
   matchId: Types.ObjectId;
 
   @Prop({
+    type: Types.ObjectId,
+    ref: 'Venue',
+    default: null,
+  })
+  venueId?: Types.ObjectId;
+
+  @Prop({
     type: {
       tossText: { type: String, trim: true },
       winnerId: { type: Types.ObjectId, ref: 'Team' },

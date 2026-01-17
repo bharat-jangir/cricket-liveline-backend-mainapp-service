@@ -1,8 +1,8 @@
-import { 
-  IsString, 
-  IsOptional, 
-  IsEnum, 
-  IsBoolean, 
+import {
+  IsString,
+  IsOptional,
+  IsEnum,
+  IsBoolean,
   IsNumber,
   IsMongoId,
   IsDate,
@@ -61,9 +61,9 @@ export class CreateMatchDto {
   @IsNotEmpty()
   teamBId: string;
 
+  @IsOptional()
   @IsMongoId()
-  @IsNotEmpty()
-  venueId: string;
+  venueId?: string;
 
   @IsDate()
   @Type(() => Date)
