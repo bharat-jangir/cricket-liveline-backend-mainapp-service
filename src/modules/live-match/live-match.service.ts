@@ -681,12 +681,42 @@ export class LiveMatchService {
             },
           },
           { new: true, upsert: true, session }
-        )
-          .populate('toss.winnerId', 'name shortName code logo')
-          .lean();
+        );
+
+        // Update LiveMatchStatus with teams from toss
+        const match = await this.matchModel.findById(matchObjectId).session(session).lean();
+        if (match) {
+          let battingTeamId: Types.ObjectId;
+          let bowlingTeamId: Types.ObjectId;
+
+          const isWinnerTeamA = winnerObjectId.toString() === match.teamAId.toString();
+
+          if (updateTossDto.elected === 'bat') {
+            battingTeamId = winnerObjectId;
+            bowlingTeamId = isWinnerTeamA ? match.teamBId as any : match.teamAId as any;
+          } else {
+            bowlingTeamId = winnerObjectId;
+            battingTeamId = isWinnerTeamA ? match.teamBId as any : match.teamAId as any;
+          }
+
+          await this.liveMatchStatusModel.findOneAndUpdate(
+            { matchId: matchObjectId },
+            {
+              battingTeamId,
+              bowlingTeamId,
+              lastUpdated: new Date(),
+            },
+            { upsert: true, session }
+          );
+        }
+
+        const populatedMatchDetails = await this.matchDetailsModel.populate(matchDetails, {
+          path: 'toss.winnerId',
+          select: 'name shortName code logo'
+        });
 
         return this.responseService.successWithSingle(
-          matchDetails,
+          populatedMatchDetails,
           'Toss information updated successfully',
           'TOSS_UPDATED',
           'Toss information updated successfully',
@@ -877,87 +907,22 @@ export class LiveMatchService {
         );
       }
 
-      // Get or create inning
-      let inning = await this.inningModel
+      // Get inning
+      const inning = await this.inningModel
         .findOne({ matchId: matchObjectId, inningNumber })
         .populate('battingTeamId', 'name shortName code logo')
         .populate('bowlingTeamId', 'name shortName code logo')
         .lean();
 
       if (!inning) {
-        let battingTeamId: Types.ObjectId | undefined;
-        let bowlingTeamId: Types.ObjectId | undefined;
-
-        // Try to get teams from previous inning
-        if (inningNumber > 1) {
-          const previousInning = await this.inningModel
-            .findOne({ matchId: matchObjectId, inningNumber: inningNumber - 1 })
-            .lean();
-
-          if (previousInning) {
-            battingTeamId = previousInning.bowlingTeamId as any;
-            bowlingTeamId = previousInning.battingTeamId as any;
-          }
-        }
-
-        // Fallback to live status
-        if (!battingTeamId) {
-          const liveStatus = await this.liveMatchStatusModel
-            .findOne({ matchId: matchObjectId })
-            .lean();
-
-          if (liveStatus?.battingTeamId) {
-            // If we're creating a higher inning number than what's live, swap
-            if (inningNumber > liveStatus.currentInning) {
-              battingTeamId = liveStatus.bowlingTeamId;
-              bowlingTeamId = liveStatus.battingTeamId;
-            } else {
-              battingTeamId = liveStatus.battingTeamId;
-              bowlingTeamId = liveStatus.bowlingTeamId;
-            }
-          }
-        }
-
-        // Final fallback to match teams
-        if (!battingTeamId) {
-          battingTeamId = match.teamAId;
-          bowlingTeamId = match.teamBId;
-        }
-
-        // Create default inning
-        const newInning = await this.inningModel.create({
-          matchId: matchObjectId,
-          inningNumber,
-          battingTeamId,
-          bowlingTeamId,
-          totalRuns: 0,
-          totalWickets: 0,
-          totalOvers: 0,
-        });
-
-        // Also update LiveMatchStatus if this is now the current inning
-        await this.liveMatchStatusModel.findOneAndUpdate(
-          { matchId: matchObjectId },
-          {
-            currentInning: inningNumber,
-            battingTeamId,
-            bowlingTeamId,
-            score: "0/0",
-            overs: "0.0",
-            balls: 0,
-            currentOver: 0,
-            currentBall: 0,
-            lastUpdated: new Date(),
-          },
-          { upsert: true }
+        return this.responseService.error(
+          'Inning not found',
+          'INNING_NOT_FOUND',
+          `Inning ${inningNumber} not found for this match. Scorecards are created when the match starts or squads are declared.`,
+          undefined,
+          null,
+          HttpStatus.NOT_FOUND,
         );
-
-        // Populate the created inning
-        inning = await this.inningModel
-          .findById(newInning._id)
-          .populate('battingTeamId', 'name shortName code logo')
-          .populate('bowlingTeamId', 'name shortName code logo')
-          .lean();
       }
 
       // Get batting scorecard
