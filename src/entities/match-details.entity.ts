@@ -132,6 +132,15 @@ export class MatchDetails {
     min: 0,
   })
   powerplayOvers: number;
+
+  @Prop({ default: 6 })
+  ballsPerOver: number;
+
+  @Prop({ default: 20 })
+  oversPerInning: number;
+
+  @Prop({ default: 0 })
+  maxBowlerLimit: number;
 }
 
 export const MatchDetailsSchema = SchemaFactory.createForClass(MatchDetails);

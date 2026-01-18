@@ -108,6 +108,9 @@ export class ScoreEngineService {
     }
 
     private async loadState(matchId: Types.ObjectId): Promise<MatchState> {
+        const match = await this.matchModel.findById(matchId).exec();
+        if (!match) throw new NotFoundException('Match not found');
+
         const liveStatus = await this.liveStatusModel.findOne({ matchId }).exec();
         if (!liveStatus) throw new NotFoundException('Match Live Status not found');
 
@@ -125,6 +128,7 @@ export class ScoreEngineService {
         ]);
 
         return {
+            match,
             liveStatus,
             inning,
             striker: striker as any,
@@ -198,10 +202,11 @@ export class ScoreEngineService {
 
         // 3. Update bowler stats in BowlingScorecard
         if (bowler) {
+            const ballsPerOver = state.match.ballsPerOver || 6;
             if (isLegalBall) {
                 bowler.balls = (bowler.balls || 0) + 1;
-                const completedOvers = Math.floor(bowler.balls / 6);
-                const remainingBalls = bowler.balls % 6;
+                const completedOvers = Math.floor(bowler.balls / ballsPerOver);
+                const remainingBalls = bowler.balls % ballsPerOver;
                 bowler.overs = parseFloat(`${completedOvers}.${remainingBalls}`);
             }
             const bowlerRunsInBall = (!isBye && !isLegBye && !isPenalty) ? (runsScored + extras) : 0;
@@ -572,9 +577,10 @@ export class ScoreEngineService {
         if (bowler) {
             const isComposite = (event as any).isComposite;
             if ((isLegalBall || isNoBall) && !isComposite) {
+                const ballsPerOver = state.match.ballsPerOver || 6;
                 bowler.balls = Math.max(0, bowler.balls - 1);
-                const completedOvers = Math.floor(bowler.balls / 6);
-                const remainingBalls = bowler.balls % 6;
+                const completedOvers = Math.floor(bowler.balls / ballsPerOver);
+                const remainingBalls = bowler.balls % ballsPerOver;
                 bowler.overs = parseFloat(`${completedOvers}.${remainingBalls}`);
             }
             const bowlerRunsInBall = (!isBye && !isLegBye && !isPenalty) ? (runsScored + extras) : 0;
@@ -620,8 +626,9 @@ export class ScoreEngineService {
             }
 
             // Check if we are undoing the end of a maiden over
-            if (isLegalBall && (inning.totalBalls + 1) > 0 && (inning.totalBalls + 1) % 6 === 0) {
-                const overNumber = Math.floor((inning.totalBalls + 1) / 6);
+            const ballsPerOver = state.match.ballsPerOver || 6;
+            if (isLegalBall && (inning.totalBalls + 1) > 0 && (inning.totalBalls + 1) % ballsPerOver === 0) {
+                const overNumber = Math.floor((inning.totalBalls + 1) / ballsPerOver);
                 const overSummary = await this.overSummaryModel.findOne({
                     matchId: inning.matchId,
                     inningId: inning._id,
@@ -647,9 +654,15 @@ export class ScoreEngineService {
         // If we undid a legal ball, totalBalls is now X. The ball was X+1.
         // If we undid a wide, totalBalls is X. The ball was "extra" in this over.
 
+        // Actually, for the summary, we want the current state's over perspective?
+        // Undo happens AFTER state reversion.
+        // If we undid a legal ball, totalBalls is now X. The ball was X+1.
+        // If we undid a wide, totalBalls is X. The ball was "extra" in this over.
+
         // Simpler: Just find the summary for the current over (or previous if empty? No).
         // Safest: Use the current over index from state.
-        const currentOver = Math.floor(state.inning.totalBalls / 6) + 1;
+        const ballsPerOver = state.match.ballsPerOver || 6;
+        const currentOver = Math.floor(state.inning.totalBalls / ballsPerOver) + 1;
         // Wait, if we undid the last ball of over 5, totalBalls is now over 4's end.
         // But the summary we want to modify is over 5 (which might now be empty).
 
@@ -729,13 +742,18 @@ export class ScoreEngineService {
 
         // Update LiveMatchStatus
         if (liveStatus) {
-            const currentOver = Math.floor(inning.totalBalls / 6);
-            const currentBall = inning.totalBalls % 6;
+            const ballsPerOver = state.match.ballsPerOver || 6;
+            const currentOver = Math.floor(inning.totalBalls / ballsPerOver);
+            const currentBall = inning.totalBalls % ballsPerOver;
 
             liveStatus.overs = `${currentOver}.${currentBall}`;
             liveStatus.score = `${inning.totalRuns}/${inning.totalWickets}`;
             liveStatus.balls = inning.totalBalls;
             liveStatus.currentOver = currentOver;
+
+            // Sync match parameters to live status for frontend consumption
+            liveStatus.ballsPerOver = ballsPerOver;
+            liveStatus.oversPerInning = state.match.oversPerInning || 20;
 
             // Sync current player IDs from state documents
             if (state.striker) liveStatus.currentStrikerId = state.striker.playerId;
@@ -788,7 +806,8 @@ export class ScoreEngineService {
         const lastBall = state.currentOverBalls[state.currentOverBalls.length - 1];
         if (!lastBall) return;
 
-        const currentOver = Math.ceil(inning.totalBalls / 6) || 1;
+        const ballsPerOver = state.match.ballsPerOver || 6;
+        const currentOver = Math.ceil(inning.totalBalls / ballsPerOver) || 1;
         const isComposite = (event as any).isComposite;
 
         // Get ball representation

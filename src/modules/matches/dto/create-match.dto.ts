@@ -49,9 +49,21 @@ export class CreateMatchDto {
   @IsNotEmpty()
   matchType: string;
 
-  @IsEnum(['test', 'odi', 't20', 't20i'])
+  @IsEnum(['test', 'odi', 't20', 't20i', 't10', 'hundred'])
   @IsNotEmpty()
   matchFormat: string;
+
+  @IsOptional()
+  @IsNumber()
+  ballsPerOver?: number;
+
+  @IsOptional()
+  @IsNumber()
+  oversPerInning?: number;
+
+  @IsOptional()
+  @IsNumber()
+  maxBowlerLimit?: number;
 
   @IsMongoId()
   @IsNotEmpty()

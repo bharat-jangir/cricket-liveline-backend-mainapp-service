@@ -182,6 +182,15 @@ export class LiveMatchStatus {
     playerId: Types.ObjectId;
   };
 
+  @Prop({ default: 6 })
+  ballsPerOver: number;
+
+  @Prop({ default: 20 })
+  oversPerInning: number;
+
+  @Prop({ default: 0 })
+  maxBowlerLimit: number;
+
   @Prop({ default: false })
   requiresWicketSelection?: boolean;
 

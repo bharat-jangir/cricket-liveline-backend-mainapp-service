@@ -164,6 +164,10 @@ export class LiveMatchService {
         updateData.venueId = new Types.ObjectId(updateDto.venueId);
       }
 
+      if (updateDto.ballsPerOver !== undefined) updateData.ballsPerOver = updateDto.ballsPerOver;
+      if (updateDto.oversPerInning !== undefined) updateData.oversPerInning = updateDto.oversPerInning;
+      if (updateDto.maxBowlerLimit !== undefined) updateData.maxBowlerLimit = updateDto.maxBowlerLimit;
+
       const matchDetails = await this.matchDetailsModel.findOneAndUpdate(
         { matchId: matchObjectId },
         updateData,
@@ -175,6 +179,17 @@ export class LiveMatchService {
         .populate('officials.refereeId', 'name')
         .populate('venueId', 'name city country')
         .lean();
+
+      // Also update the main Match entity for consistency
+      const matchUpdateData: any = {};
+      if (updateDto.ballsPerOver !== undefined) matchUpdateData.ballsPerOver = updateDto.ballsPerOver;
+      if (updateDto.oversPerInning !== undefined) matchUpdateData.oversPerInning = updateDto.oversPerInning;
+      if (updateDto.maxBowlerLimit !== undefined) matchUpdateData.maxBowlerLimit = updateDto.maxBowlerLimit;
+      if (updateDto.matchFormat) matchUpdateData.matchFormat = updateDto.matchFormat.toLowerCase();
+
+      if (Object.keys(matchUpdateData).length > 0) {
+        await this.matchModel.findByIdAndUpdate(matchObjectId, matchUpdateData);
+      }
 
       return this.responseService.successWithSingle(
         matchDetails,

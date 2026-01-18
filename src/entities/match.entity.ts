@@ -60,10 +60,19 @@ export class Match {
   matchType: string;
 
   @Prop({
-    enum: ['test', 'odi', 't20', 't20i'],
+    enum: ['test', 'odi', 't20', 't20i', 't10', 'hundred'],
     required: true,
   })
   matchFormat: string;
+
+  @Prop({ default: 6 })
+  ballsPerOver: number;
+
+  @Prop({ default: 20 })
+  oversPerInning: number;
+
+  @Prop({ default: 0 })
+  maxBowlerLimit: number;
 
   @Prop({
     type: Types.ObjectId,
