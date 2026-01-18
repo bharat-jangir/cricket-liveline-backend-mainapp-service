@@ -329,6 +329,20 @@ export class LiveMatchController {
       const ballEvent: any = { ...event, matchId: payload.matchId, originalEvent: payload.event };
       const result = await this.scoreEngineService.handleEvent(payload.matchId, ballEvent);
 
+      // Check if wicket selection is required
+      if (result && result.requiresWicketSelection) {
+        return {
+          status: true,
+          statusCode: 200,
+          message: 'Wide/No-ball processed, wicket selection required',
+          data: {
+            result,
+            requiresWicketSelection: true,
+            wicketContext: result.wicketContext
+          }
+        };
+      }
+
       return {
         status: true,
         statusCode: 200,
@@ -349,7 +363,8 @@ export class LiveMatchController {
   private parseSimpleEvent(eventString: string): any | null {
     const event = eventString.toLowerCase().trim();
 
-    if (/^[1-6]$/.test(event)) {
+    // Regular runs (0-6)
+    if (/^[0-6]$/.test(event)) {
       return {
         type: 'RUN',
         runs: parseInt(event),
@@ -357,24 +372,31 @@ export class LiveMatchController {
       };
     }
 
-    if (event === '0') {
-      return { type: 'RUN', runs: 0 };
-    }
-
-    if (/^lb[1-6]$/.test(event)) {
+    // Leg byes: lb1, lb2, lb3, lb4, lb5, lb6
+    if (/^lb[0-6]$/.test(event)) {
       return {
         type: 'LEG_BYE',
         runs: parseInt(event.substring(2))
       };
     }
 
-    if (/^b[1-6]$/.test(event)) {
+    // Byes: 1b, 2b...
+    if (/^[0-6]b$/.test(event)) {
       return {
         type: 'BYE',
-        runs: parseInt(event.substring(1))
+        runs: parseInt(event.charAt(0))
       };
     }
 
+    // Leg Byes: 1lb, 2lb...
+    if (/^[0-6]lb$/.test(event)) {
+      return {
+        type: 'LEG_BYE',
+        runs: parseInt(event.charAt(0))
+      };
+    }
+
+    // Penalty: p1-p9
     if (/^p[1-9]$/.test(event)) {
       return {
         type: 'PENALTY',
@@ -383,11 +405,76 @@ export class LiveMatchController {
       };
     }
 
+    // Wide + runs/extras: wd0-6, wd1b-6b, wd1lb-6lb
+    if (/^wd([0-6])(b|lb)?$/.test(event)) {
+      const match = event.match(/^wd([0-6])(b|lb)?$/);
+      if (match) {
+        const runsTaken = parseInt(match[1]);
+        const extraType = match[2];
+        const type = extraType === 'b' ? 'BYE' : extraType === 'lb' ? 'LEG_BYE' : null;
+        return {
+          type: 'WIDE',
+          runs: 0, // In Wide deliveries, all runs are extras (Wides)
+          extras: 1 + runsTaken,
+          isBoundary: runsTaken === 4 || runsTaken === 6,
+          isExtraType: type as any
+        };
+      }
+    }
+
+    // No-ball + byes/leg-byes: nb1b, nb1lb etc.
+    if (/^nb[0-6](b|lb)$/.test(event)) {
+      const match = event.match(/^nb([0-6])(b|lb)$/);
+      if (match) {
+        const runsTaken = parseInt(match[1]);
+        const type = match[2] === 'b' ? 'BYE' : 'LEG_BYE';
+        return {
+          type: 'NO_BALL',
+          runs: 0, // All runs go to No Ball extras if it's a bye/leg-bye
+          extras: 1 + runsTaken,
+          isExtraType: type // Flag to help engine categorize it as NB extra but track it was a bye
+        };
+      }
+    }
+
+    // No-ball + runs: nb0, nb1, nb2, nb3, nb4, nb5, nb6
+    if (/^nb[0-6]$/.test(event)) {
+      const runsTaken = parseInt(event.substring(2));
+      return {
+        type: 'NO_BALL',
+        runs: runsTaken, // Hits go to batter
+        extras: 1,
+        isBoundary: runsTaken === 4 || runsTaken === 6
+      };
+    }
+
+    // Wide + wicket: wdw (requires dismissal type selection)
+    if (event === 'wdw') {
+      return {
+        type: 'WIDE',
+        runs: 0,
+        extras: 1,
+        triggerWicket: true
+      };
+    }
+
+    // No-ball + wicket: nbw (requires dismissal type selection)
+    if (event === 'nbw') {
+      return {
+        type: 'NO_BALL',
+        runs: 0,
+        extras: 1,
+        triggerWicket: true
+      };
+    }
+
+    // Simple events
     switch (event) {
       case 'nb': return { type: 'NO_BALL', runs: 0, extras: 1 };
       case 'wd': return { type: 'WIDE', runs: 0, extras: 1 };
       case 'w': return { type: 'WICKET', runs: 0 };
       case 'o': return { type: 'OVER_END' };
+      case 'u': return { type: 'UNDO' };
       default:
         // For unknown events, return the event string as type
         return { type: eventString };

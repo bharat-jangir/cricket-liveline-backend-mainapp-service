@@ -39,8 +39,33 @@ export class ScoreEngineService {
                 return await this.processUndo(matchId, event);
             }
 
-            // Save snapshot of current state before applying changes
-            await this.saveSnapshot(matchId, currentState, event);
+            // Check if this is a wicket trigger event (wdw, nbw)
+            if ((event as any).triggerWicket) {
+                // Process the wide/no-ball first, but don't process wicket yet
+                await this.saveSnapshot(matchId, currentState, event);
+                const newState = await this.processBall(currentState, event);
+                await this.persistState(newState, event);
+                await this.publishMatchUpdate(matchId, newState, event);
+
+                // Return special response indicating wicket selection is needed
+                return {
+                    ...newState.liveStatus.toObject(),
+                    requiresWicketSelection: true,
+                    wicketContext: {
+                        eventType: event.type,
+                        runs: event.runs || 0,
+                        extras: event.extras || 0
+                    }
+                };
+            }
+
+            // Define events that should be stored in history for Undo
+            const isScoringEvent = ['RUN', 'WIDE', 'NO_BALL', 'BYE', 'LEG_BYE', 'PENALTY', 'WICKET'].includes(event.type);
+
+            // Save snapshot of current state before applying changes (only for scoring events)
+            if (isScoringEvent) {
+                await this.saveSnapshot(matchId, currentState, event);
+            }
 
             let newState = currentState;
             switch (event.type) {
@@ -124,8 +149,22 @@ export class ScoreEngineService {
         // 1. Inning Updates
         inning.totalRuns += (runsScored + extras);
         if (isLegalBall) inning.totalBalls += 1;
-        if (isWide) inning.wides += (extras || 1);
-        if (isNoBall) inning.noBalls += (extras || 1);
+
+        // Rules implementation based on provided screenshots
+        if (isWide) {
+            // Wide + Runs (wd1, wd4, etc.): All runs go to Wides extras
+            inning.wides += (runsScored + extras);
+        } else if (isNoBall) {
+            // No Ball + Runs (Hit) vs No Ball + Byes
+            if ((event as any).isExtraType) {
+                // No Ball + Bye/Leg Bye: All to No Ball extras
+                inning.noBalls += (runsScored + extras);
+            } else {
+                // No Ball + Hit: 1 to Extra, rest to Batter (already handled by totalRuns)
+                inning.noBalls += extras; // usually 1
+            }
+        }
+
         if (isBye) inning.byes += runsScored;
         if (isLegBye) inning.legByes += runsScored;
         if (isPenalty) inning.penalties += extras;
@@ -214,6 +253,7 @@ export class ScoreEngineService {
 
     private async processWicket(state: MatchState, event: BallEvent): Promise<MatchState> {
         const { inning, striker, bowler } = state;
+        const isComposite = (event as any).isComposite;
 
         const isWide = event.type === 'WIDE';
         const isNoBall = event.type === 'NO_BALL';
@@ -221,7 +261,8 @@ export class ScoreEngineService {
 
         if (striker) {
             // Only count balls for legal deliveries and no-balls (not wides)
-            if (isLegalBall || isNoBall) {
+            // Skip ball increment if this is a composite event (already counted in previous trigger event)
+            if (!isComposite && (isLegalBall || isNoBall)) {
                 striker.balls += 1;
                 striker.strikeRate = striker.balls > 0 ? (striker.runs / striker.balls) * 100 : 0;
             }
@@ -233,7 +274,9 @@ export class ScoreEngineService {
             striker.teamId = inning.battingTeamId;
 
             inning.totalWickets += 1;
-            if (isLegalBall) {
+
+            // Skip ball increment if composite (already counted)
+            if (!isComposite && isLegalBall) {
                 inning.totalBalls += 1;
             }
 
@@ -251,13 +294,35 @@ export class ScoreEngineService {
             };
 
             if (bowler) {
-                if (isLegalBall || isNoBall) {
+                // Skip ball increment if composite (already counted)
+                if (!isComposite && (isLegalBall || isNoBall)) {
                     bowler.balls = (bowler.balls || 0) + 1;
                     const completedOvers = Math.floor(bowler.balls / 6);
                     const remainingBalls = bowler.balls % 6;
                     bowler.overs = parseFloat(`${completedOvers}.${remainingBalls}`);
                 }
-                bowler.wickets += 1;
+
+                // ICC Law Refinement: 
+                // Rule: Wicket is only credited to the bowler if the batter is Stumped or Hit Wicket on a Wide.
+                // Rule: On No Ball, bowler gets NO credit for any dismissal (ICC Law 21.18 excludes Hit Wicket).
+                // Standard: Bowled, Caught, Stumped, LBW, Hit Wicket on a legal ball.
+                const dt = (event.wicketType || 'bowled').toLowerCase();
+                let bowlGetsCredit = false;
+
+                if (isLegalBall) {
+                    bowlGetsCredit = ['bowled', 'caught', 'stumped', 'lbw', 'hit_wicket'].includes(dt);
+                } else if (isWide) {
+                    bowlGetsCredit = ['stumped', 'hit_wicket'].includes(dt);
+                } else if (isNoBall) {
+                    // Batter cannot be out Hit Wicket on a No Ball. 
+                    // Other dismissals on NB (Run Out, etc.) are not credited to bowler.
+                    bowlGetsCredit = false;
+                }
+
+                if (bowlGetsCredit) {
+                    bowler.wickets += 1;
+                }
+
                 if (bowler.overs > 0) {
                     bowler.economy = bowler.runs / bowler.overs;
                 }
@@ -268,6 +333,7 @@ export class ScoreEngineService {
         }
         return state;
     }
+
 
     private swapStrike(state: MatchState) {
         if (state.striker && state.nonStriker) {
@@ -288,6 +354,16 @@ export class ScoreEngineService {
     }
 
     private recordBallData(state: MatchState, event: BallEvent, isWicket: boolean) {
+        // If it's a composite event (like wdw, nbw), merge with previous ball
+        if ((event as any).isComposite && state.currentOverBalls.length > 0) {
+            const lastBall = state.currentOverBalls[state.currentOverBalls.length - 1];
+            // Merge wicket details into last ball
+            lastBall.isWicket = isWicket;
+            lastBall.wicketType = event.wicketType;
+            // Don't change runs/extras as they were set by the trigger event
+            return;
+        }
+
         state.currentOverBalls.push({
             ballNumber: state.inning.totalBalls,
             runs: event.runs || 0,
@@ -298,7 +374,8 @@ export class ScoreEngineService {
             wicketType: event.wicketType,
             bowlerId: state.bowler?._id,
             strikerId: state.striker?._id,
-            type: event.type
+            type: event.type,
+            isExtraType: (event as any).isExtraType
         });
     }
 
@@ -325,11 +402,45 @@ export class ScoreEngineService {
     }
 
     private async processUndo(matchId: string, event?: BallEvent): Promise<any> {
-        const lastHistory = await this.scoreHistoryModel.findOne({ matchId: new Types.ObjectId(matchId) }).sort({ createdAt: -1 });
-        if (!lastHistory) throw new BadRequestException('No history found to undo');
+        this.logger.log(`[UNDO] Starting undo for match ${matchId}`);
+        // Sort by _id descending to get the absolute latest event
+        const lastHistory = await this.scoreHistoryModel.findOne({
+            matchId: new Types.ObjectId(matchId)
+        }).sort({ _id: -1 });
+
+        if (!lastHistory) {
+            this.logger.warn(`[UNDO] No history found for match ${matchId}`);
+            throw new BadRequestException('No history found to undo');
+        }
 
         const lastEvent = lastHistory.event;
+        const snapshot = lastHistory.stateSnapshot;
+        this.logger.log(`[UNDO] Undoing event type: ${lastEvent.type}, isComposite: ${(lastEvent as any).isComposite}`);
+
         const currentState = await this.loadState(new Types.ObjectId(matchId));
+
+        // CRITICAL BUG FIX: If we are undoing a WICKET, the striker might already be 'out' 
+        // and thus not loaded by loadState (if loadState used isOut: false filters).
+        // Even if loadState is robust, it's safer to ensure we have the documents 
+        // that were active at the time of the event.
+        if (snapshot.striker && (!currentState.striker || currentState.striker._id.toString() !== snapshot.striker._id.toString())) {
+            this.logger.log(`[UNDO] Recovering striker from snapshot: ${snapshot.striker._id}`);
+            currentState.striker = await this.battingModel.findById(snapshot.striker._id);
+        }
+        if (snapshot.nonStriker && (!currentState.nonStriker || currentState.nonStriker._id.toString() !== snapshot.nonStriker._id.toString())) {
+            this.logger.log(`[UNDO] Recovering non-striker from snapshot: ${snapshot.nonStriker._id}`);
+            currentState.nonStriker = await this.battingModel.findById(snapshot.nonStriker._id);
+        }
+        if (snapshot.bowler && (!currentState.bowler || currentState.bowler._id.toString() !== snapshot.bowler._id.toString())) {
+            this.logger.log(`[UNDO] Recovering bowler from snapshot: ${snapshot.bowler._id}`);
+            currentState.bowler = await this.bowlingModel.findById(snapshot.bowler._id);
+        }
+
+        // Restore liveStatus flags from the snapshot to ensure UI consistency (e.g. requiresWicketSelection)
+        if (snapshot.liveStatus) {
+            currentState.liveStatus.requiresWicketSelection = snapshot.liveStatus.requiresWicketSelection;
+            currentState.liveStatus.wicketContext = snapshot.liveStatus.wicketContext;
+        }
 
         // Validate undo is possible
         this.validateUndoOperation(currentState, lastEvent);
@@ -337,12 +448,20 @@ export class ScoreEngineService {
         // Reverse the last ball based on event type
         await this.reverseBallEvent(currentState, lastEvent);
 
-        // Save the reversed state with the undo event for confirmation (sets currentBall in DB)
+        // Save the reversed state
         await this.persistState(currentState, event);
         await this.publishMatchReset(matchId, currentState);
 
         // Delete the history entry
         await this.scoreHistoryModel.findByIdAndDelete(lastHistory._id);
+        this.logger.log(`[UNDO] Successfully undid ${lastEvent.type}. History deleted.`);
+
+        // Atomic Undo: If the event we just undid was composite (part 2 of wdw),
+        // we must also undo the trigger event (part 1 of wdw).
+        if ((lastEvent as any).isComposite) {
+            this.logger.log(`[UNDO] Event was composite, triggering recursive undo for part 1`);
+            return await this.processUndo(matchId, event);
+        }
 
         return currentState.liveStatus;
     }
@@ -396,9 +515,18 @@ export class ScoreEngineService {
 
         // 1. Reverse Inning Updates
         inning.totalRuns = Math.max(0, inning.totalRuns - (runsScored + extras));
-        if (isLegalBall) inning.totalBalls = Math.max(0, inning.totalBalls - 1);
-        if (isWide) inning.wides = Math.max(0, inning.wides - (extras || 1));
-        if (isNoBall) inning.noBalls = Math.max(0, inning.noBalls - (extras || 1));
+        if (isLegalBall && !(event as any).isComposite) inning.totalBalls = Math.max(0, inning.totalBalls - 1);
+
+        if (isWide) {
+            inning.wides = Math.max(0, inning.wides - (runsScored + extras));
+        } else if (isNoBall) {
+            if ((event as any).isExtraType) {
+                inning.noBalls = Math.max(0, inning.noBalls - (runsScored + extras));
+            } else {
+                inning.noBalls = Math.max(0, inning.noBalls - extras);
+            }
+        }
+
         if (isBye) inning.byes = Math.max(0, inning.byes - runsScored);
         if (isLegBye) inning.legByes = Math.max(0, inning.legByes - runsScored);
         if (isPenalty) inning.penalties = Math.max(0, inning.penalties - extras);
@@ -432,14 +560,18 @@ export class ScoreEngineService {
             if (isWicket) {
                 striker.isOut = false;
                 striker.dismissalType = null;
+                striker.dismissalText = null;
                 striker.bowlerId = null;
+                striker.fielderId = null;
+                striker.fielder2Id = null;
                 striker.teamId = null;
             }
         }
 
         // 4. Reverse Bowler Updates
         if (bowler) {
-            if (isLegalBall || (isNoBall && event.type === 'WICKET')) {
+            const isComposite = (event as any).isComposite;
+            if ((isLegalBall || isNoBall) && !isComposite) {
                 bowler.balls = Math.max(0, bowler.balls - 1);
                 const completedOvers = Math.floor(bowler.balls / 6);
                 const remainingBalls = bowler.balls % 6;
@@ -454,8 +586,23 @@ export class ScoreEngineService {
                 if (runsScored === 4) bowler.fours = Math.max(0, (bowler.fours || 0) - 1);
                 if (runsScored === 6) bowler.sixes = Math.max(0, (bowler.sixes || 0) - 1);
             }
+
             if (isWicket) {
-                bowler.wickets = Math.max(0, bowler.wickets - 1);
+                // Rule-based credit reversal
+                const dt = (event.wicketType || 'bowled').toLowerCase();
+                let bowlHadCredit = false;
+
+                if (isLegalBall) {
+                    bowlHadCredit = ['bowled', 'caught', 'stumped', 'lbw', 'hit_wicket'].includes(dt);
+                } else if (isWide) {
+                    bowlHadCredit = ['stumped', 'hit_wicket'].includes(dt);
+                } else if (isNoBall) {
+                    bowlHadCredit = false;
+                }
+
+                if (bowlHadCredit) {
+                    bowler.wickets = Math.max(0, bowler.wickets - 1);
+                }
             }
             // Recalculate economy - handle division by zero
             if (bowler.overs > 0) {
@@ -486,39 +633,87 @@ export class ScoreEngineService {
             }
         }
 
-        // 5. Remove last ball from over summary
-        await this.removeLastBallFromOverSummary(state);
+        // 5. Revert over summary (handle composite un-merge if needed)
+        await this.revertOverSummaryEvent(state, event);
     }
 
-    private async removeLastBallFromOverSummary(state: MatchState): Promise<void> {
+    private async revertOverSummaryEvent(state: MatchState, event: BallEvent): Promise<void> {
         if (!state.bowler) return;
 
         // Calculate which over the undone ball belonged to
-        const ballsBeforeUndo = state.inning.totalBalls + 1;
-        const overNumber = Math.ceil(ballsBeforeUndo / 6);
+        // If it's a legal ball, totalBalls was just decremented, so we look at the ball that was just there?
+        // Actually, for the summary, we want the current state's over perspective?
+        // Undo happens AFTER state reversion.
+        // If we undid a legal ball, totalBalls is now X. The ball was X+1.
+        // If we undid a wide, totalBalls is X. The ball was "extra" in this over.
 
+        // Simpler: Just find the summary for the current over (or previous if empty? No).
+        // Safest: Use the current over index from state.
+        const currentOver = Math.floor(state.inning.totalBalls / 6) + 1;
+        // Wait, if we undid the last ball of over 5, totalBalls is now over 4's end.
+        // But the summary we want to modify is over 5 (which might now be empty).
+
+        // Let's use the event logic. 
+        // If we undid an event that pushed a ball?
+        // If composite, we modify the existing last ball.
+
+        // We can just query for the latest over summary for this inning
         const overSummary = await this.overSummaryModel.findOne({
             matchId: state.inning.matchId,
-            inningId: state.inning._id,
-            overNumber: overNumber
-        });
+            inningId: state.inning._id
+        }).sort({ overNumber: -1 });
 
-        if (overSummary && overSummary.ballsData.length > 0) {
-            // Remove last ball
-            overSummary.ballsData.pop();
+        if (!overSummary) return;
 
-            // If no balls left, delete the over summary
+        const isComposite = (event as any).isComposite;
+        const runs = event.runs || 0;
+        const extras = event.extras || 0;
+        const totalRuns = runs + extras;
+        const isWicket = event.type === 'WICKET';
+        const isExtra = extras > 0;
+
+        if (overSummary.ballsData.length > 0) {
+            if (isComposite) {
+                // If composite, we merged into the last ball. So we un-merge.
+                // Assuming we appended "+W" or similar.
+                const lastBallStr = overSummary.ballsData[overSummary.ballsData.length - 1];
+                // Simple reversion: remove "+W" or "W" if it was just appended
+                // For now, let's just strip "W" from the end if it exists, or just leave it if it's complex.
+                // Better: If we knew it was wd+W, and we undo W, we want wd.
+                // Let's assume the update logic appended "+W".
+                if (lastBallStr.endsWith('+W')) {
+                    overSummary.ballsData[overSummary.ballsData.length - 1] = lastBallStr.slice(0, -2);
+                } else if (lastBallStr.endsWith('W')) {
+                    // Fallback, might not be accurate if it was just "W"
+                    // But composite implies previous event existed.
+                }
+            } else {
+                // Determine if the event being undone actually pushed a ball?
+                // Event types that push balls: RUN, WIDE, NO_BALL, WICKET (non-composite), BYE, LEG_BYE
+                // OVER_END doesn't push ball.
+                if (event.type !== 'OVER_END') {
+                    overSummary.ballsData.pop();
+                }
+            }
+
+            // Revert Stats (Deltas)
+            overSummary.runs = Math.max(0, overSummary.runs - totalRuns);
+            overSummary.extras = Math.max(0, overSummary.extras - extras);
+            if (isWicket) {
+                overSummary.wickets = Math.max(0, overSummary.wickets - 1);
+            }
+
+            // Recalculate Maiden/Maiden Status?
+            // If runs became 0 and wickets 0... hard to prove maiden without full replay.
+            // But we can approximate or just leave it.
+            // Correct approach: Sum runs from ballsData? strings don't have runs.
+            // For now, let's assume if runs > 0 it's not maiden.
+            overSummary.isMaiden = overSummary.runs === 0 && overSummary.wickets === 0; // Simplified
+
+            // Cleanup empty summary?
             if (overSummary.ballsData.length === 0) {
                 await this.overSummaryModel.findByIdAndDelete(overSummary._id);
             } else {
-                // Recalculate over summary stats from remaining balls
-                overSummary.runs = 0;
-                overSummary.wickets = 0;
-                overSummary.extras = 0;
-
-                // Note: This is simplified. In production, you might want to
-                // recalculate from the actual ball data or store more details
-                overSummary.isMaiden = overSummary.runs === 0 && overSummary.wickets === 0;
                 await overSummary.save();
             }
         }
@@ -528,8 +723,8 @@ export class ScoreEngineService {
         const { liveStatus, inning } = state;
 
         // Update over summary for each ball immediately
-        if (state.currentOverBalls.length > 0) {
-            await this.updateOverSummary(state);
+        if (state.currentOverBalls.length > 0 && event && event.type !== 'UNDO') {
+            await this.updateOverSummary(state, event);
         }
 
         // Update LiveMatchStatus
@@ -541,6 +736,11 @@ export class ScoreEngineService {
             liveStatus.score = `${inning.totalRuns}/${inning.totalWickets}`;
             liveStatus.balls = inning.totalBalls;
             liveStatus.currentOver = currentOver;
+
+            // Sync current player IDs from state documents
+            if (state.striker) liveStatus.currentStrikerId = state.striker.playerId;
+            if (state.nonStriker) liveStatus.currentNonStrikerId = state.nonStriker.playerId;
+            if (state.bowler) liveStatus.currentBowlerId = state.bowler.playerId;
 
             // Always set currentBall to the original event string that was sent
             // For UNDO events, set it to 'confirming check' as requested
@@ -581,7 +781,7 @@ export class ScoreEngineService {
         if (state.bowler) await state.bowler.save();
     }
 
-    private async updateOverSummary(state: MatchState) {
+    private async updateOverSummary(state: MatchState, event: BallEvent) {
         if (!state.bowler) return;
 
         const { inning, bowler } = state;
@@ -589,14 +789,37 @@ export class ScoreEngineService {
         if (!lastBall) return;
 
         const currentOver = Math.ceil(inning.totalBalls / 6) || 1;
+        const isComposite = (event as any).isComposite;
 
         // Get ball representation
         let ballValue = lastBall.runs.toString();
         if (lastBall.isWicket) ballValue = 'W';
-        if (lastBall.isWide) ballValue = (lastBall.runs > 0) ? `${lastBall.runs}wd` : 'wd';
-        if (lastBall.isNoBall) ballValue = (lastBall.runs > 0) ? `${lastBall.runs}nb` : 'nb';
-        if (lastBall.type === 'BYE') ballValue = lastBall.runs > 0 ? `b${lastBall.runs}` : 'b';
-        if (lastBall.type === 'LEG_BYE') ballValue = lastBall.runs > 0 ? `lb${lastBall.runs}` : 'lb';
+
+        // Improved logic: combine wide/no-ball with run/wicket using + notation
+        if (lastBall.isWide) {
+            const extraRuns = lastBall.extras - 1;
+            const suffix = lastBall.isExtraType === 'BYE' ? 'b' : lastBall.isExtraType === 'LEG_BYE' ? 'lb' : '';
+            ballValue = (extraRuns > 0) ? `wd+${extraRuns}${suffix}` : 'wd';
+            if (lastBall.isWicket) ballValue += '+W';
+        } else if (lastBall.isNoBall) {
+            if (lastBall.runs > 0) {
+                ballValue = `nb+${lastBall.runs}`;
+            } else if (lastBall.extras > 1) {
+                const extraRuns = lastBall.extras - 1;
+                const suffix = lastBall.isExtraType === 'BYE' ? 'b' : lastBall.isExtraType === 'LEG_BYE' ? 'lb' : '';
+                ballValue = `nb+${extraRuns}${suffix}`;
+            } else {
+                ballValue = 'nb';
+            }
+            if (lastBall.isWicket) ballValue += '+W';
+        } else if (lastBall.isWicket) {
+            // Legal ball wicket
+            // If runs were scored? e.g. "1+W" (Run Out)
+            ballValue = lastBall.runs > 0 ? `${lastBall.runs}+W` : 'W';
+        }
+
+        if (lastBall.type === 'BYE') ballValue = lastBall.runs > 0 ? `${lastBall.runs}b` : 'b';
+        if (lastBall.type === 'LEG_BYE') ballValue = lastBall.runs > 0 ? `${lastBall.runs}lb` : 'lb';
         if (lastBall.type === 'PENALTY') ballValue = `p${lastBall.extras}`;
 
         // Find existing over summary or create new one
@@ -616,31 +839,47 @@ export class ScoreEngineService {
                 wickets: 0,
                 extras: 0,
                 ballsData: [],
-                isMaiden: true // Start as true, will flip to false if runs conceded
+                isMaiden: true
             });
         }
 
-        // Add ball to ballsData
-        overSummary.ballsData.push(ballValue);
+        if (isComposite && overSummary.ballsData.length > 0) {
+            console.log(`[DEBUG] Merging. Data before: ${JSON.stringify(overSummary.ballsData)}, eventType: ${event.type}`);
+            // Merge logic: Append +W to the last ball string
+            // We know the last ball was the 'wide' or 'no ball' trigger.
+            let lastVal = overSummary.ballsData[overSummary.ballsData.length - 1];
+
+            // Avoid double appending and only append for Wicket events
+            if (event.type === 'WICKET' && !lastVal.includes('W')) {
+                lastVal += '+W';
+            }
+            // Update the last entry
+            overSummary.ballsData[overSummary.ballsData.length - 1] = lastVal;
+            overSummary.markModified('ballsData');
+        } else {
+            console.log(`[DEBUG] Pushing new ball. isComposite: ${isComposite}, len: ${overSummary.ballsData.length}`);
+            // Add ball to ballsData
+            overSummary.ballsData.push(ballValue);
+        }
 
         // Update totals
-        const runsScored = lastBall.runs || 0;
-        const extras = lastBall.extras || 0;
-        const totalRunsInBall = runsScored + extras;
+        // For composite events, we only add the delta from the event
+        const eventRuns = event.runs || 0;
+        const eventExtras = event.extras || 0;
+        // Total runs in this event (for composite, the previous part already added its runs)
+        const totalRunsInEvent = eventRuns + eventExtras;
 
-        overSummary.runs += totalRunsInBall;
-        if (lastBall.isWicket) overSummary.wickets += 1;
-        if (extras > 0) overSummary.extras += extras;
+        overSummary.runs += totalRunsInEvent;
+        // Check if this specific event triggered a wicket
+        if (event.type === 'WICKET') overSummary.wickets += 1;
+        if (eventExtras > 0) overSummary.extras += eventExtras;
 
-        // Maiden check: Any runs conceded by bowler (Bat runs, Wides, No-balls)?
-        // Byes, Leg-byes and Penalties don't break a maiden.
-        const isBye = lastBall.type === 'BYE';
-        const isLegBye = lastBall.type === 'LEG_BYE';
-        const isPenalty = lastBall.type === 'PENALTY';
+        // Maiden check
+        const isBye = event.type === 'BYE';
+        const isLegBye = event.type === 'LEG_BYE';
+        const isPenalty = event.type === 'PENALTY';
 
-        const bowlerConcededRuns = (!isBye && !isLegBye && !isPenalty) ? totalRunsInBall : 0;
-
-        if (bowlerConcededRuns > 0) {
+        if (!isBye && !isLegBye && !isPenalty && totalRunsInEvent > 0) {
             overSummary.isMaiden = false;
         }
 

@@ -11,4 +11,5 @@ export interface BallEvent {
     comments?: string;
     timestamp?: number;
     ballNumber?: number;
+    isComposite?: boolean;
 }

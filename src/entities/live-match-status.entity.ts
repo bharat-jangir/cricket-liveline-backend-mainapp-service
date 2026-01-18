@@ -181,6 +181,16 @@ export class LiveMatchStatus {
     tr: any;
     playerId: Types.ObjectId;
   };
+
+  @Prop({ default: false })
+  requiresWicketSelection?: boolean;
+
+  @Prop({ type: MongooseSchema.Types.Mixed, default: null })
+  wicketContext?: {
+    eventType: string;
+    runs: number;
+    extras: number;
+  };
 }
 
 export const LiveMatchStatusSchema = SchemaFactory.createForClass(LiveMatchStatus);

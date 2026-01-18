@@ -28,4 +28,8 @@ export class ScoreEventDto {
     @IsNumber()
     @IsOptional()
     ballNumber?: number;
+
+    @IsBoolean()
+    @IsOptional()
+    isComposite?: boolean;
 }
