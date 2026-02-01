@@ -94,6 +94,9 @@ export class OverSummary {
     timestamp: Date;
   }[];
 
+  @Prop({ type: MongooseSchema.Types.Mixed })
+  overHighlight?: any;
+
   @Prop({ default: false })
   isMaiden: boolean;
 }

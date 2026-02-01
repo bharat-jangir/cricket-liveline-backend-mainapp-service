@@ -43,12 +43,16 @@ export class CommentaryGeneratorService {
         bowlerName: string,
         batsmanName: string,
         fielderName?: string,
+        stats?: { runs: number; balls: number; fours: number; sixes: number; strikeRate: number }
     ): Promise<any> {
-        const scorecard = await this.battingScorecardModel.findOne({
-            matchId: ball.matchId,
-            inningId: ball.inningId,
-            playerId: dismissedPlayerId,
-        });
+        let scorecard = null;
+        if (!stats) {
+            scorecard = await this.battingScorecardModel.findOne({
+                matchId: ball.matchId,
+                inningId: ball.inningId,
+                playerId: dismissedPlayerId,
+            });
+        }
 
         let commentary = '';
         let shortText = '';
@@ -92,11 +96,11 @@ export class CommentaryGeneratorService {
                 wicketBowlerName: bowlerName,
                 wicketBatsmanName: batsmanName,
                 wicketFielderName: fielderName,
-                wicketBatsmanRuns: scorecard?.runs || 0,
-                wicketBatsmanBalls: scorecard?.balls || 0,
-                wicketBatsmanFours: scorecard?.fours || 0,
-                wicketBatsmanSixes: scorecard?.sixes || 0,
-                wicketBatsmanSR: scorecard?.strikeRate || 0,
+                wicketBatsmanRuns: stats ? stats.runs : (scorecard?.runs || 0),
+                wicketBatsmanBalls: stats ? stats.balls : (scorecard?.balls || 0),
+                wicketBatsmanFours: stats ? stats.fours : (scorecard?.fours || 0),
+                wicketBatsmanSixes: stats ? stats.sixes : (scorecard?.sixes || 0),
+                wicketBatsmanSR: stats ? stats.strikeRate : (scorecard?.strikeRate || 0),
             },
         };
     }
@@ -155,7 +159,10 @@ export class CommentaryGeneratorService {
 
     async createOverSummaryHighlight(
         overSummary: OverSummary,
-        bowlerName: string,
+        bowlerStats: { name: string; wickets: number; runs: number; overs: number },
+        batsman1: { name: string; runs: number; balls: number },
+        batsman2: { name: string; runs: number; balls: number },
+        matchScore: { runs: number; wickets: number; overs: string }
     ): Promise<any> {
         const commentary = `End of Over ${overSummary.overNumber}: ${overSummary.runs} runs${overSummary.wickets > 0 ? `, ${overSummary.wickets} wicket${overSummary.wickets > 1 ? 's' : ''}` : ''
             }${overSummary.isMaiden ? ' (Maiden)' : ''}`;
@@ -173,10 +180,32 @@ export class CommentaryGeneratorService {
             timestamp: new Date(),
             highlightData: {
                 overSummaryNumber: overSummary.overNumber,
-                overSummaryBowlerName: bowlerName,
+                overSummaryBowlerName: bowlerStats.name,
                 overSummaryRuns: overSummary.runs,
                 overSummaryWickets: overSummary.wickets,
-                overSummaryBallsData: overSummary.ballsData || [],
+                overSummaryBallsData: overSummary.ballsData ? JSON.parse(JSON.stringify(overSummary.ballsData)) : [],
+                // New Rich Stats
+                matchScore: `${matchScore.runs}/${matchScore.wickets}`,
+                matchOvers: matchScore.overs,
+                batsman1: {
+                    name: batsman1.name,
+                    runs: batsman1.runs,
+                    balls: batsman1.balls,
+                    display: `${batsman1.runs}(${batsman1.balls})`
+                },
+                batsman2: {
+                    name: batsman2.name,
+                    runs: batsman2.runs,
+                    balls: batsman2.balls,
+                    display: `${batsman2.runs}(${batsman2.balls})`
+                },
+                bowler: {
+                    name: bowlerStats.name,
+                    wickets: bowlerStats.wickets,
+                    runs: bowlerStats.runs,
+                    overs: bowlerStats.overs,
+                    display: `${bowlerStats.wickets}-${bowlerStats.runs}(${bowlerStats.overs})`
+                }
             },
         };
     }

@@ -63,7 +63,7 @@ export class ScoreEngineService {
             }
 
             // Define events that should be stored in history for Undo
-            const isScoringEvent = ['RUN', 'WIDE', 'NO_BALL', 'BYE', 'LEG_BYE', 'PENALTY', 'WICKET'].includes(event.type);
+            const isScoringEvent = ['RUN', 'WIDE', 'NO_BALL', 'BYE', 'LEG_BYE', 'PENALTY', 'WICKET', 'OVER_END'].includes(event.type);
 
             // Save snapshot of current state before applying changes (only for scoring events)
             if (isScoringEvent) {
@@ -84,7 +84,7 @@ export class ScoreEngineService {
                     newState = await this.processWicket(currentState, event);
                     break;
                 case 'OVER_END':
-                    newState = await this.endOver(currentState);
+                    newState = await this.endOver(currentState, event);
                     break;
                 default:
                     // Handle unknown events (rain delay, messages, etc.)
@@ -125,9 +125,9 @@ export class ScoreEngineService {
 
         // Get current players from BattingScorecard and BowlingScorecard using LiveMatchStatus IDs
         const [striker, nonStriker, bowler] = await Promise.all([
-            liveStatus.currentStrikerId ? this.battingModel.findOne({ matchId, inningId: inning._id, playerId: liveStatus.currentStrikerId }).exec() : null,
-            liveStatus.currentNonStrikerId ? this.battingModel.findOne({ matchId, inningId: inning._id, playerId: liveStatus.currentNonStrikerId }).exec() : null,
-            liveStatus.currentBowlerId ? this.bowlingModel.findOne({ matchId, inningId: inning._id, playerId: liveStatus.currentBowlerId }).exec() : null
+            liveStatus.currentStrikerId ? this.battingModel.findOne({ matchId, inningId: inning._id, playerId: liveStatus.currentStrikerId }).populate('playerId', 'name').exec() : null,
+            liveStatus.currentNonStrikerId ? this.battingModel.findOne({ matchId, inningId: inning._id, playerId: liveStatus.currentNonStrikerId }).populate('playerId', 'name').exec() : null,
+            liveStatus.currentBowlerId ? this.bowlingModel.findOne({ matchId, inningId: inning._id, playerId: liveStatus.currentBowlerId }).populate('playerId', 'name').exec() : null
         ]);
 
         return {
@@ -290,16 +290,21 @@ export class ScoreEngineService {
 
             // Update lastWicket in inning
             inning.lastWicket = {
-                name: `Player ${striker.playerId}`,
+                name: (striker.playerId as any)?.name || `Player ${striker.playerId}`,
                 dismissal: event.wicketType || 'bowled',
                 runs: striker.runs,
                 balls: striker.balls,
                 fours: striker.fours,
                 sixes: striker.sixes,
-                to: `Bowler ${bowler?.playerId}`,
+                to: (bowler?.playerId as any)?.name || `Bowler ${bowler?.playerId}`,
                 tr: `${striker.runs}(${striker.balls})`,
                 playerId: striker.playerId
             };
+
+            // Set fielder if provided
+            if (event.helperId) {
+                striker.fielderId = new Types.ObjectId(event.helperId);
+            }
 
             if (bowler) {
                 // Skip ball increment if composite (already counted)
@@ -387,7 +392,60 @@ export class ScoreEngineService {
         });
     }
 
-    private async endOver(state: MatchState): Promise<MatchState> {
+    private async endOver(state: MatchState, event: BallEvent): Promise<MatchState> {
+        const { inning, striker, nonStriker, bowler } = state;
+        const ballsPerOver = state.match.ballsPerOver || 6;
+        const overNumber = Math.ceil(inning.totalBalls / ballsPerOver) || 1;
+
+        // Find the summary for the over that just ended
+        const overSummary = await this.overSummaryModel.findOne({
+            matchId: inning.matchId,
+            inningId: inning._id,
+            overNumber: overNumber
+        });
+
+        if (overSummary) {
+            // Populate player names for the rich summary
+            if (striker) await (striker as any).populate('playerId', 'name');
+            if (nonStriker) await (nonStriker as any).populate('playerId', 'name');
+            if (bowler) await (bowler as any).populate('playerId', 'name');
+
+            // Gather stats for the over summary highlight
+            const batsman1 = {
+                name: (striker?.playerId as any)?.name || 'Striker',
+                runs: striker?.runs || 0,
+                balls: striker?.balls || 0
+            };
+            const batsman2 = {
+                name: (nonStriker?.playerId as any)?.name || 'Non-Striker',
+                runs: nonStriker?.runs || 0,
+                balls: nonStriker?.balls || 0
+            };
+            const bowlerStats = {
+                name: (bowler?.playerId as any)?.name || 'Bowler',
+                wickets: bowler?.wickets || 0,
+                runs: bowler?.runs || 0,
+                overs: bowler?.overs || 0
+            };
+            const matchScore = {
+                runs: inning.totalRuns,
+                wickets: inning.totalWickets,
+                overs: `${Math.floor(inning.totalBalls / 6)}.${inning.totalBalls % 6}`
+            };
+
+            const highlight = await this.commentaryGenerator.createOverSummaryHighlight(
+                overSummary,
+                bowlerStats,
+                batsman1,
+                batsman2,
+                matchScore
+            );
+
+            overSummary.overHighlight = highlight;
+            overSummary.markModified('overHighlight');
+            await overSummary.save();
+        }
+
         // Change strike at end of over
         this.swapStrike(state);
         return state;
@@ -518,127 +576,126 @@ export class ScoreEngineService {
         // Handle OVER_END separately
         if (isOverEnd) {
             this.swapStrike(state); // Reverse strike swap
-            return;
-        }
+        } else {
+            // 1. Reverse Inning Updates
+            inning.totalRuns = Math.max(0, inning.totalRuns - (runsScored + extras));
+            if (isLegalBall && !(event as any).isComposite) inning.totalBalls = Math.max(0, inning.totalBalls - 1);
 
-        // 1. Reverse Inning Updates
-        inning.totalRuns = Math.max(0, inning.totalRuns - (runsScored + extras));
-        if (isLegalBall && !(event as any).isComposite) inning.totalBalls = Math.max(0, inning.totalBalls - 1);
-
-        if (isWide) {
-            inning.wides = Math.max(0, inning.wides - (runsScored + extras));
-        } else if (isNoBall) {
-            if ((event as any).isExtraType) {
-                inning.noBalls = Math.max(0, inning.noBalls - (runsScored + extras));
-            } else {
-                inning.noBalls = Math.max(0, inning.noBalls - extras);
+            if (isWide) {
+                inning.wides = Math.max(0, inning.wides - (runsScored + extras));
+            } else if (isNoBall) {
+                if ((event as any).isExtraType) {
+                    inning.noBalls = Math.max(0, inning.noBalls - (runsScored + extras));
+                } else {
+                    inning.noBalls = Math.max(0, inning.noBalls - extras);
+                }
             }
-        }
 
-        if (isBye) inning.byes = Math.max(0, inning.byes - runsScored);
-        if (isLegBye) inning.legByes = Math.max(0, inning.legByes - runsScored);
-        if (isPenalty) inning.penalties = Math.max(0, inning.penalties - extras);
-        inning.extras = Math.max(0, inning.extras - extras);
-        if (isWicket) {
-            inning.totalWickets = Math.max(0, inning.totalWickets - 1);
-            // Clear last wicket if this was the last wicket
-            if (inning.totalWickets === 0) {
-                inning.lastWicket = null;
-            }
-        }
-
-        // 2. Reverse Strike Rotation (BEFORE updating striker stats)
-        // This ensures the correct striker is selected for stat reversal if they rotated on an odd run
-        if (!isWide && !isWicket && runsScored % 2 !== 0) {
-            this.swapStrike(state);
-        }
-
-        // 3. Reverse Striker Updates
-        if (state.striker && !isWide && !isPenalty) {
-            const striker = state.striker;
-            if (!isBye && !isLegBye && !isWicket) {
-                striker.runs = Math.max(0, striker.runs - runsScored);
-                if (runsScored === 4) striker.fours = Math.max(0, striker.fours - 1);
-                if (runsScored === 6) striker.sixes = Math.max(0, striker.sixes - 1);
-            }
-            if (isLegalBall || isNoBall) {
-                striker.balls = Math.max(0, striker.balls - 1);
-                striker.strikeRate = striker.balls > 0 ? (striker.runs / striker.balls) * 100 : 0;
-            }
+            if (isBye) inning.byes = Math.max(0, inning.byes - runsScored);
+            if (isLegBye) inning.legByes = Math.max(0, inning.legByes - runsScored);
+            if (isPenalty) inning.penalties = Math.max(0, inning.penalties - extras);
+            inning.extras = Math.max(0, inning.extras - extras);
             if (isWicket) {
-                striker.isOut = false;
-                striker.dismissalType = null;
-                striker.dismissalText = null;
-                striker.bowlerId = null;
-                striker.fielderId = null;
-                striker.fielder2Id = null;
-                striker.teamId = null;
+                inning.totalWickets = Math.max(0, inning.totalWickets - 1);
+                // Clear last wicket if this was the last wicket
+                if (inning.totalWickets === 0) {
+                    inning.lastWicket = null;
+                }
             }
-        }
 
-        // 4. Reverse Bowler Updates
-        if (bowler) {
-            const isComposite = (event as any).isComposite;
-            if ((isLegalBall || isNoBall) && !isComposite) {
+            // 2. Reverse Strike Rotation (BEFORE updating striker stats)
+            // This ensures the correct striker is selected for stat reversal if they rotated on an odd run
+            if (!isWide && !isWicket && runsScored % 2 !== 0) {
+                this.swapStrike(state);
+            }
+
+            // 3. Reverse Striker Updates
+            if (state.striker && !isWide && !isPenalty) {
+                const striker = state.striker;
+                if (!isBye && !isLegBye && !isWicket) {
+                    striker.runs = Math.max(0, striker.runs - runsScored);
+                    if (runsScored === 4) striker.fours = Math.max(0, striker.fours - 1);
+                    if (runsScored === 6) striker.sixes = Math.max(0, striker.sixes - 1);
+                }
+                if (isLegalBall || isNoBall) {
+                    striker.balls = Math.max(0, striker.balls - 1);
+                    striker.strikeRate = striker.balls > 0 ? (striker.runs / striker.balls) * 100 : 0;
+                }
+                if (isWicket) {
+                    striker.isOut = false;
+                    striker.dismissalType = null;
+                    striker.dismissalText = null;
+                    striker.bowlerId = null;
+                    striker.fielderId = null;
+                    striker.fielder2Id = null;
+                    striker.teamId = null;
+                }
+            }
+
+            // 4. Reverse Bowler Updates
+            if (bowler) {
+                const isComposite = (event as any).isComposite;
+                if ((isLegalBall || isNoBall) && !isComposite) {
+                    const ballsPerOver = state.match.ballsPerOver || 6;
+                    bowler.balls = Math.max(0, bowler.balls - 1);
+                    const completedOvers = Math.floor(bowler.balls / ballsPerOver);
+                    const remainingBalls = bowler.balls % ballsPerOver;
+                    bowler.overs = parseFloat(`${completedOvers}.${remainingBalls}`);
+                }
+                const bowlerRunsInBall = (!isBye && !isLegBye && !isPenalty) ? (runsScored + extras) : 0;
+                if (bowlerRunsInBall === 0) {
+                    bowler.dots = Math.max(0, (bowler.dots || 0) - 1);
+                }
+                if (!isBye && !isLegBye && !isPenalty) {
+                    bowler.runs = Math.max(0, bowler.runs - bowlerRunsInBall);
+                    if (runsScored === 4) bowler.fours = Math.max(0, (bowler.fours || 0) - 1);
+                    if (runsScored === 6) bowler.sixes = Math.max(0, (bowler.sixes || 0) - 1);
+                }
+
+                if (isWicket) {
+                    // Rule-based credit reversal
+                    const dt = (event.wicketType || 'bowled').toLowerCase();
+                    let bowlHadCredit = false;
+
+                    if (isLegalBall) {
+                        bowlHadCredit = ['bowled', 'caught', 'stumped', 'lbw', 'hit_wicket'].includes(dt);
+                    } else if (isWide) {
+                        bowlHadCredit = ['stumped', 'hit_wicket'].includes(dt);
+                    } else if (isNoBall) {
+                        bowlHadCredit = false;
+                    }
+
+                    if (bowlHadCredit) {
+                        bowler.wickets = Math.max(0, bowler.wickets - 1);
+                    }
+                }
+                // Recalculate economy - handle division by zero
+                if (bowler.overs > 0) {
+                    bowler.economy = bowler.runs / bowler.overs;
+                } else {
+                    bowler.economy = 0;
+                }
+
+                if (bowler.wickets > 0) {
+                    bowler.average = bowler.runs / bowler.wickets;
+                    bowler.strikeRate = bowler.balls / bowler.wickets;
+                } else {
+                    bowler.average = 0;
+                    bowler.strikeRate = 0;
+                }
+
+                // Check if we are undoing the end of a maiden over
                 const ballsPerOver = state.match.ballsPerOver || 6;
-                bowler.balls = Math.max(0, bowler.balls - 1);
-                const completedOvers = Math.floor(bowler.balls / ballsPerOver);
-                const remainingBalls = bowler.balls % ballsPerOver;
-                bowler.overs = parseFloat(`${completedOvers}.${remainingBalls}`);
-            }
-            const bowlerRunsInBall = (!isBye && !isLegBye && !isPenalty) ? (runsScored + extras) : 0;
-            if (bowlerRunsInBall === 0) {
-                bowler.dots = Math.max(0, (bowler.dots || 0) - 1);
-            }
-            if (!isBye && !isLegBye && !isPenalty) {
-                bowler.runs = Math.max(0, bowler.runs - bowlerRunsInBall);
-                if (runsScored === 4) bowler.fours = Math.max(0, (bowler.fours || 0) - 1);
-                if (runsScored === 6) bowler.sixes = Math.max(0, (bowler.sixes || 0) - 1);
-            }
-
-            if (isWicket) {
-                // Rule-based credit reversal
-                const dt = (event.wicketType || 'bowled').toLowerCase();
-                let bowlHadCredit = false;
-
-                if (isLegalBall) {
-                    bowlHadCredit = ['bowled', 'caught', 'stumped', 'lbw', 'hit_wicket'].includes(dt);
-                } else if (isWide) {
-                    bowlHadCredit = ['stumped', 'hit_wicket'].includes(dt);
-                } else if (isNoBall) {
-                    bowlHadCredit = false;
-                }
-
-                if (bowlHadCredit) {
-                    bowler.wickets = Math.max(0, bowler.wickets - 1);
-                }
-            }
-            // Recalculate economy - handle division by zero
-            if (bowler.overs > 0) {
-                bowler.economy = bowler.runs / bowler.overs;
-            } else {
-                bowler.economy = 0;
-            }
-
-            if (bowler.wickets > 0) {
-                bowler.average = bowler.runs / bowler.wickets;
-                bowler.strikeRate = bowler.balls / bowler.wickets;
-            } else {
-                bowler.average = 0;
-                bowler.strikeRate = 0;
-            }
-
-            // Check if we are undoing the end of a maiden over
-            const ballsPerOver = state.match.ballsPerOver || 6;
-            if (isLegalBall && (inning.totalBalls + 1) > 0 && (inning.totalBalls + 1) % ballsPerOver === 0) {
-                const overNumber = Math.floor((inning.totalBalls + 1) / ballsPerOver);
-                const overSummary = await this.overSummaryModel.findOne({
-                    matchId: inning.matchId,
-                    inningId: inning._id,
-                    overNumber: overNumber
-                });
-                if (overSummary && overSummary.isMaiden) {
-                    bowler.maidens = Math.max(0, (bowler.maidens || 0) - 1);
+                if (isLegalBall && (inning.totalBalls + 1) > 0 && (inning.totalBalls + 1) % ballsPerOver === 0) {
+                    const overNumber = Math.floor((inning.totalBalls + 1) / ballsPerOver);
+                    const overSummary = await this.overSummaryModel.findOne({
+                        matchId: inning.matchId,
+                        inningId: inning._id,
+                        overNumber: overNumber
+                    });
+                    if (overSummary && overSummary.isMaiden) {
+                        bowler.maidens = Math.max(0, (bowler.maidens || 0) - 1);
+                    }
                 }
             }
         }
@@ -699,8 +756,14 @@ export class ScoreEngineService {
                 lastBall.type = 'ball';
                 delete lastBall.highlightData;
             } else {
-                if (event.type !== 'OVER_END') {
+                if (event.type === 'OVER_END') {
+                    overSummary.overHighlight = null;
+                    overSummary.markModified('overHighlight');
+                } else {
                     overSummary.ballsData.pop();
+                    // If we undo a ball, any existing over highlight for this over is now invalid
+                    overSummary.overHighlight = null;
+                    overSummary.markModified('overHighlight');
                 }
             }
 
@@ -726,7 +789,7 @@ export class ScoreEngineService {
         const { liveStatus, inning } = state;
 
         // Update over summary for each ball immediately
-        if (state.currentOverBalls.length > 0 && event && event.type !== 'UNDO') {
+        if (state.currentOverBalls.length > 0 && event && !['UNDO', 'OVER_END'].includes(event.type)) {
             await this.updateOverSummary(state, event);
         }
 
@@ -852,9 +915,9 @@ export class ScoreEngineService {
             });
         }
 
-        // Generate Commentary - use player names from event if provided
-        const bowlerName = (event as any).bowlerName || 'Unknown Bowler';
-        const batsmanName = (event as any).batsmanName || 'Unknown Batsman';
+        // Generate Commentary - use populated name if available
+        const bowlerName = (bowler?.playerId as any)?.name || (event as any).bowlerName || 'Unknown Bowler';
+        const batsmanName = (state.striker?.playerId as any)?.name || (event as any).batsmanName || 'Unknown Batsman';
 
         let ballObj: any;
 
@@ -865,7 +928,14 @@ export class ScoreEngineService {
                 event.wicketType || 'bowled',
                 bowlerName,
                 batsmanName,
-                undefined
+                (event as any).fielderName,
+                {
+                    runs: state.striker.runs,
+                    balls: state.striker.balls,
+                    fours: state.striker.fours,
+                    sixes: state.striker.sixes,
+                    strikeRate: state.striker.strikeRate
+                }
             );
         } else {
             ballObj = await this.commentaryGenerator.generateDefaultBallCommentary(

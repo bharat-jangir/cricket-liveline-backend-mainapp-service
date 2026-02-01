@@ -2393,6 +2393,18 @@ export class LiveMatchService {
       // Flatten and transform ballsData into a flat commentary list
       const commentary: any = [];
       summaries.forEach(over => {
+        // Add over end highlight if it exists
+        if (over.overHighlight) {
+          commentary.push({
+            ...over.overHighlight,
+            _id: over.overHighlight.ballId?.toString() || over.overHighlight.ballId,
+            ballId: over.overHighlight.ballId?.toString() || over.overHighlight.ballId,
+            overNumber: over.overNumber,
+            inningId: over.inningId,
+            matchId: over.matchId,
+          });
+        }
+
         if (over.ballsData && Array.isArray(over.ballsData)) {
           // We want the balls within an over to be in reverse order too (most recent first)
           const overBalls = [...over.ballsData].reverse().map(ball => ({
@@ -2435,7 +2447,10 @@ export class LiveMatchService {
     try {
       // Find the over summary that contains this ballId
       const overSummary = await this.overSummaryModel.findOne({
-        'ballsData.ballId': commentaryId
+        $or: [
+          { 'ballsData.ballId': commentaryId },
+          { 'overHighlight.ballId': commentaryId }
+        ]
       });
 
       if (!overSummary) {
@@ -2450,17 +2465,23 @@ export class LiveMatchService {
       }
 
       // Update the ball in ballsData
-      const ballIndex = overSummary.ballsData.findIndex((b: any) => b.ballId === commentaryId);
+      const ballIndex = overSummary.ballsData?.findIndex((b: any) => b.ballId === commentaryId) ?? -1;
       if (ballIndex !== -1) {
         overSummary.ballsData[ballIndex].commentary = commentary;
         overSummary.markModified('ballsData');
-        await (overSummary as any).save();
+      } else if (overSummary.overHighlight?.ballId === commentaryId) {
+        overSummary.overHighlight.commentary = commentary;
+        overSummary.markModified('overHighlight');
       }
 
-      const updatedBall = overSummary.ballsData[ballIndex];
+      await (overSummary as any).save();
+
+      const updatedCommentary = ballIndex !== -1
+        ? overSummary.ballsData[ballIndex]
+        : overSummary.overHighlight;
 
       return this.responseService.successWithSingle(
-        { ...updatedBall, _id: updatedBall.ballId },
+        { ...updatedCommentary, _id: updatedCommentary.ballId },
         'Commentary updated successfully',
         'COMMENTARY_UPDATED',
         'Commentary updated successfully',
@@ -2485,7 +2506,10 @@ export class LiveMatchService {
   async deleteCommentary(commentaryId: string): Promise<IResponseWithStatusCode<any>> {
     try {
       const overSummary = await this.overSummaryModel.findOne({
-        'ballsData.ballId': commentaryId
+        $or: [
+          { 'ballsData.ballId': commentaryId },
+          { 'overHighlight.ballId': commentaryId }
+        ]
       });
 
       if (!overSummary) {
@@ -2501,7 +2525,7 @@ export class LiveMatchService {
 
       // For deletion, if it's a "ball" type, we just clear the text to preserve the ball record
       // If it's a highlight type, we could remove it entirely.
-      const ballIndex = overSummary.ballsData.findIndex((b: any) => b.ballId === commentaryId);
+      const ballIndex = overSummary.ballsData?.findIndex((b: any) => b.ballId === commentaryId) ?? -1;
       if (ballIndex !== -1) {
         const ball = overSummary.ballsData[ballIndex];
         if (ball.type === 'ball' || ball.type === 'wicket') {
@@ -2512,8 +2536,12 @@ export class LiveMatchService {
           overSummary.ballsData.splice(ballIndex, 1);
         }
         overSummary.markModified('ballsData');
-        await (overSummary as any).save();
+      } else if (overSummary.overHighlight?.ballId === commentaryId) {
+        overSummary.overHighlight = null;
+        overSummary.markModified('overHighlight');
       }
+
+      await (overSummary as any).save();
 
       return this.responseService.successWithSingle(
         { deleted: true, commentaryId },
