@@ -5,6 +5,7 @@ export type BallDocument = Ball & Document;
 
 @Schema({ timestamps: true })
 export class Ball {
+
   @Prop({
     type: Types.ObjectId,
     ref: 'Match',

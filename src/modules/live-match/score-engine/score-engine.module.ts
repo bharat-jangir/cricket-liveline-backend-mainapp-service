@@ -10,7 +10,9 @@ import { BattingScorecard, BattingScorecardSchema } from '../../../entities/batt
 import { BowlingScorecard, BowlingScorecardSchema } from '../../../entities/bowling-scorecard.entity';
 import { MatchSquad, MatchSquadSchema } from '../../../entities/match-squad.entity';
 import { OverSummary, OverSummarySchema } from '../../../entities/over-summary.entity';
+import { Player, PlayerSchema } from '../../../entities/player.entity';
 import { RedisPublisherService } from '../../../common/redis/redis-publisher.service';
+import { CommentaryGeneratorService } from '../services/commentary-generator.service';
 
 @Module({
     imports: [
@@ -23,9 +25,10 @@ import { RedisPublisherService } from '../../../common/redis/redis-publisher.ser
             { name: BowlingScorecard.name, schema: BowlingScorecardSchema },
             { name: MatchSquad.name, schema: MatchSquadSchema },
             { name: OverSummary.name, schema: OverSummarySchema },
+            { name: Player.name, schema: PlayerSchema },
         ]),
     ],
-    providers: [ScoreEngineService, RedisPublisherService],
+    providers: [ScoreEngineService, RedisPublisherService, CommentaryGeneratorService],
     exports: [ScoreEngineService],
 })
 export class ScoreEngineModule { }

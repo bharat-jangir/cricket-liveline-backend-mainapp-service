@@ -54,11 +54,45 @@ export class OverSummary {
   @Prop({
     type: [MongooseSchema.Types.Mixed],
     validate: {
-      validator: (v: any[]) => v.length <= 12,
-      message: 'Balls data cannot exceed 12',
+      validator: (v: any[]) => v.length <= 15, // Increased slightly to accommodate common extra balls
+      message: 'Balls data cannot exceed 15',
     },
   })
-  ballsData?: any[];
+  ballsData?: {
+    ballId: Types.ObjectId;
+    ballLabel: string;
+    commentary: string;
+    shortText?: string;
+    isLegal: boolean;
+    type: 'ball' | 'wicket' | 'milestone' | 'over_end' | 'innings_summary';
+
+    // Player Information
+    bowlerId?: Types.ObjectId;
+    bowlerName?: string;
+    batsmanId?: Types.ObjectId;
+    batsmanName?: string;
+
+    // Live Status at Ball Time
+    odds?: {
+      team1Odds?: number;
+      team2Odds?: number;
+    };
+    session?: {
+      sessionName?: string;
+      sessionValue?: number;
+      sessionBlue?: number;
+      sessionRed?: number;
+    };
+    lambi?: {
+      lambiValue?: number;
+      lambiBlue?: number;
+      lambiRed?: number;
+    };
+
+    highlightData?: any;
+    displayTheme?: string;
+    timestamp: Date;
+  }[];
 
   @Prop({ default: false })
   isMaiden: boolean;

@@ -32,4 +32,12 @@ export class ScoreEventDto {
     @IsBoolean()
     @IsOptional()
     isComposite?: boolean;
+
+    @IsString()
+    @IsOptional()
+    bowlerName?: string;
+
+    @IsString()
+    @IsOptional()
+    batsmanName?: string;
 }

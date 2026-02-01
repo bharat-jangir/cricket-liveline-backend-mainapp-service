@@ -14,7 +14,6 @@ export * from './bowling-scorecard.entity';
 export * from './ball.entity';
 export * from './live-match-status.entity';
 export * from './current-players.entity';
-export * from './ball-commentary.entity';
 export * from './over-summary.entity';
 export * from './partnership.entity';
 export * from './fall-of-wicket.entity';

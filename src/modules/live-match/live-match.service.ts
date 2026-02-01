@@ -2360,6 +2360,181 @@ export class LiveMatchService {
     }
   }
 
+  // ==================== COMMENTARY METHODS ====================
+
+  /**
+   * Get match commentary (all or for specific inning)
+   */
+  async getMatchCommentary(matchId: string, inningId?: string): Promise<IResponseWithStatusCode<any>> {
+    try {
+      if (!Types.ObjectId.isValid(matchId)) {
+        return this.responseService.error(
+          'Invalid match ID',
+          'INVALID_MATCH_ID',
+          'Match ID must be a valid MongoDB ObjectId',
+          undefined,
+          null,
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+
+      const matchObjectId = new Types.ObjectId(matchId);
+      const query: any = { matchId: matchObjectId };
+
+      if (inningId && Types.ObjectId.isValid(inningId)) {
+        query.inningId = new Types.ObjectId(inningId);
+      }
+
+      const summaries = await this.overSummaryModel
+        .find(query)
+        .sort({ overNumber: -1 }) // Recent overs first
+        .lean();
+
+      // Flatten and transform ballsData into a flat commentary list
+      const commentary: any = [];
+      summaries.forEach(over => {
+        if (over.ballsData && Array.isArray(over.ballsData)) {
+          // We want the balls within an over to be in reverse order too (most recent first)
+          const overBalls = [...over.ballsData].reverse().map(ball => ({
+            ...ball,
+            _id: ball.ballId?.toString() || ball.ballId, // Map ballId to _id for frontend compatibility
+            ballId: ball.ballId?.toString() || ball.ballId, // Convert ObjectId to string
+            overNumber: over.overNumber,
+            inningId: over.inningId,
+            matchId: over.matchId,
+          }));
+          commentary.push(...overBalls);
+        }
+      });
+
+      return this.responseService.successWithSingle(
+        commentary,
+        'Commentary retrieved successfully',
+        'COMMENTARY_RETRIEVED',
+        'Commentary retrieved successfully',
+        undefined,
+        HttpStatus.OK,
+      );
+    } catch (error) {
+      return this.responseService.error(
+        'Failed to fetch commentary',
+        'COMMENTARY_FETCH_FAILED',
+        error.message,
+        undefined,
+        null,
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
+  /**
+   * Update commentary text
+   * Note: commentaryId here refers to the ballId within an OverSummary
+   */
+  async updateCommentary(commentaryId: string, commentary: string): Promise<IResponseWithStatusCode<any>> {
+    try {
+      // Find the over summary that contains this ballId
+      const overSummary = await this.overSummaryModel.findOne({
+        'ballsData.ballId': commentaryId
+      });
+
+      if (!overSummary) {
+        return this.responseService.error(
+          'Commentary not found',
+          'COMMENTARY_NOT_FOUND',
+          'Commentary with the provided ID does not exist in any over summary',
+          undefined,
+          null,
+          HttpStatus.NOT_FOUND,
+        );
+      }
+
+      // Update the ball in ballsData
+      const ballIndex = overSummary.ballsData.findIndex((b: any) => b.ballId === commentaryId);
+      if (ballIndex !== -1) {
+        overSummary.ballsData[ballIndex].commentary = commentary;
+        overSummary.markModified('ballsData');
+        await (overSummary as any).save();
+      }
+
+      const updatedBall = overSummary.ballsData[ballIndex];
+
+      return this.responseService.successWithSingle(
+        { ...updatedBall, _id: updatedBall.ballId },
+        'Commentary updated successfully',
+        'COMMENTARY_UPDATED',
+        'Commentary updated successfully',
+        undefined,
+        HttpStatus.OK,
+      );
+    } catch (error) {
+      return this.responseService.error(
+        'Failed to update commentary',
+        'COMMENTARY_UPDATE_FAILED',
+        error.message,
+        undefined,
+        null,
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
+  /**
+   * Delete commentary
+   */
+  async deleteCommentary(commentaryId: string): Promise<IResponseWithStatusCode<any>> {
+    try {
+      const overSummary = await this.overSummaryModel.findOne({
+        'ballsData.ballId': commentaryId
+      });
+
+      if (!overSummary) {
+        return this.responseService.error(
+          'Commentary not found',
+          'COMMENTARY_NOT_FOUND',
+          'Commentary with the provided ID does not exist in any over summary',
+          undefined,
+          null,
+          HttpStatus.NOT_FOUND,
+        );
+      }
+
+      // For deletion, if it's a "ball" type, we just clear the text to preserve the ball record
+      // If it's a highlight type, we could remove it entirely.
+      const ballIndex = overSummary.ballsData.findIndex((b: any) => b.ballId === commentaryId);
+      if (ballIndex !== -1) {
+        const ball = overSummary.ballsData[ballIndex];
+        if (ball.type === 'ball' || ball.type === 'wicket') {
+          ball.commentary = '';
+          delete ball.highlightData;
+        } else {
+          // Remove highlight entries entirely
+          overSummary.ballsData.splice(ballIndex, 1);
+        }
+        overSummary.markModified('ballsData');
+        await (overSummary as any).save();
+      }
+
+      return this.responseService.successWithSingle(
+        { deleted: true, commentaryId },
+        'Commentary deleted successfully',
+        'COMMENTARY_DELETED',
+        'Commentary deleted successfully',
+        undefined,
+        HttpStatus.OK,
+      );
+    } catch (error) {
+      return this.responseService.error(
+        'Failed to delete commentary',
+        'COMMENTARY_DELETE_FAILED',
+        error.message,
+        undefined,
+        null,
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
 
 }
 

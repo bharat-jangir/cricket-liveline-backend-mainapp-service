@@ -11,6 +11,8 @@ import { BattingScorecard, BattingScorecardDocument } from '../../../entities/ba
 import { BowlingScorecard, BowlingScorecardDocument } from '../../../entities/bowling-scorecard.entity';
 import { OverSummary, OverSummaryDocument } from '../../../entities/over-summary.entity';
 import { RedisPublisherService, MatchUpdatePayload } from '../../../common/redis/redis-publisher.service';
+import { CommentaryGeneratorService } from '../services/commentary-generator.service';
+import { Player } from '../../../entities/player.entity';
 
 @Injectable()
 export class ScoreEngineService {
@@ -25,6 +27,7 @@ export class ScoreEngineService {
         @InjectModel(BowlingScorecard.name) private bowlingModel: Model<BowlingScorecardDocument>,
         @InjectModel(OverSummary.name) private overSummaryModel: Model<OverSummaryDocument>,
         private redisPublisher: RedisPublisherService,
+        private commentaryGenerator: CommentaryGeneratorService,
     ) { }
 
     /**
@@ -685,45 +688,32 @@ export class ScoreEngineService {
         const isWicket = event.type === 'WICKET';
         const isExtra = extras > 0;
 
-        if (overSummary.ballsData.length > 0) {
+        if (overSummary.ballsData && overSummary.ballsData.length > 0) {
             if (isComposite) {
-                // If composite, we merged into the last ball. So we un-merge.
-                // Assuming we appended "+W" or similar.
-                const lastBallStr = overSummary.ballsData[overSummary.ballsData.length - 1];
-                // Simple reversion: remove "+W" or "W" if it was just appended
-                // For now, let's just strip "W" from the end if it exists, or just leave it if it's complex.
-                // Better: If we knew it was wd+W, and we undo W, we want wd.
-                // Let's assume the update logic appended "+W".
-                if (lastBallStr.endsWith('+W')) {
-                    overSummary.ballsData[overSummary.ballsData.length - 1] = lastBallStr.slice(0, -2);
-                } else if (lastBallStr.endsWith('W')) {
-                    // Fallback, might not be accurate if it was just "W"
-                    // But composite implies previous event existed.
+                // If composite, we merged into the last ball.
+                const lastBall = overSummary.ballsData[overSummary.ballsData.length - 1];
+                if (lastBall.ballLabel.endsWith('+W')) {
+                    lastBall.ballLabel = lastBall.ballLabel.slice(0, -2);
                 }
+                // Also revert the highlight type/data if it was updated
+                lastBall.type = 'ball';
+                delete lastBall.highlightData;
             } else {
-                // Determine if the event being undone actually pushed a ball?
-                // Event types that push balls: RUN, WIDE, NO_BALL, WICKET (non-composite), BYE, LEG_BYE
-                // OVER_END doesn't push ball.
                 if (event.type !== 'OVER_END') {
                     overSummary.ballsData.pop();
                 }
             }
 
-            // Revert Stats (Deltas)
+            // Revert Stats
             overSummary.runs = Math.max(0, overSummary.runs - totalRuns);
             overSummary.extras = Math.max(0, overSummary.extras - extras);
             if (isWicket) {
                 overSummary.wickets = Math.max(0, overSummary.wickets - 1);
             }
 
-            // Recalculate Maiden/Maiden Status?
-            // If runs became 0 and wickets 0... hard to prove maiden without full replay.
-            // But we can approximate or just leave it.
-            // Correct approach: Sum runs from ballsData? strings don't have runs.
-            // For now, let's assume if runs > 0 it's not maiden.
-            overSummary.isMaiden = overSummary.runs === 0 && overSummary.wickets === 0; // Simplified
+            overSummary.isMaiden = overSummary.runs === 0 && overSummary.wickets === 0;
+            overSummary.markModified('ballsData');
 
-            // Cleanup empty summary?
             if (overSummary.ballsData.length === 0) {
                 await this.overSummaryModel.findByIdAndDelete(overSummary._id);
             } else {
@@ -797,6 +787,9 @@ export class ScoreEngineService {
         }
 
         if (state.bowler) await state.bowler.save();
+
+        // ==================== AUTO-GENERATE COMMENTARY ====================
+        // Removed separate commentary generation. It is now integrated into updateOverSummary.
     }
 
     private async updateOverSummary(state: MatchState, event: BallEvent) {
@@ -810,36 +803,33 @@ export class ScoreEngineService {
         const currentOver = Math.ceil(inning.totalBalls / ballsPerOver) || 1;
         const isComposite = (event as any).isComposite;
 
-        // Get ball representation
-        let ballValue = lastBall.runs.toString();
-        if (lastBall.isWicket) ballValue = 'W';
+        // Get ball label
+        let ballLabel = lastBall.runs.toString();
+        if (lastBall.isWicket) ballLabel = 'W';
 
-        // Improved logic: combine wide/no-ball with run/wicket using + notation
         if (lastBall.isWide) {
             const extraRuns = lastBall.extras - 1;
             const suffix = lastBall.isExtraType === 'BYE' ? 'b' : lastBall.isExtraType === 'LEG_BYE' ? 'lb' : '';
-            ballValue = (extraRuns > 0) ? `wd+${extraRuns}${suffix}` : 'wd';
-            if (lastBall.isWicket) ballValue += '+W';
+            ballLabel = (extraRuns > 0) ? `wd+${extraRuns}${suffix}` : 'wd';
+            if (lastBall.isWicket) ballLabel += '+W';
         } else if (lastBall.isNoBall) {
             if (lastBall.runs > 0) {
-                ballValue = `nb+${lastBall.runs}`;
+                ballLabel = `nb+${lastBall.runs}`;
             } else if (lastBall.extras > 1) {
                 const extraRuns = lastBall.extras - 1;
                 const suffix = lastBall.isExtraType === 'BYE' ? 'b' : lastBall.isExtraType === 'LEG_BYE' ? 'lb' : '';
-                ballValue = `nb+${extraRuns}${suffix}`;
+                ballLabel = `nb+${extraRuns}${suffix}`;
             } else {
-                ballValue = 'nb';
+                ballLabel = 'nb';
             }
-            if (lastBall.isWicket) ballValue += '+W';
+            if (lastBall.isWicket) ballLabel += '+W';
         } else if (lastBall.isWicket) {
-            // Legal ball wicket
-            // If runs were scored? e.g. "1+W" (Run Out)
-            ballValue = lastBall.runs > 0 ? `${lastBall.runs}+W` : 'W';
+            ballLabel = lastBall.runs > 0 ? `${lastBall.runs}+W` : 'W';
         }
 
-        if (lastBall.type === 'BYE') ballValue = lastBall.runs > 0 ? `${lastBall.runs}b` : 'b';
-        if (lastBall.type === 'LEG_BYE') ballValue = lastBall.runs > 0 ? `${lastBall.runs}lb` : 'lb';
-        if (lastBall.type === 'PENALTY') ballValue = `p${lastBall.extras}`;
+        if (lastBall.type === 'BYE') ballLabel = lastBall.runs > 0 ? `${lastBall.runs}b` : 'b';
+        if (lastBall.type === 'LEG_BYE') ballLabel = lastBall.runs > 0 ? `${lastBall.runs}lb` : 'lb';
+        if (lastBall.type === 'PENALTY') ballLabel = `p${lastBall.extras}`;
 
         // Find existing over summary or create new one
         let overSummary = await this.overSummaryModel.findOne({
@@ -862,38 +852,113 @@ export class ScoreEngineService {
             });
         }
 
-        if (isComposite && overSummary.ballsData.length > 0) {
-            console.log(`[DEBUG] Merging. Data before: ${JSON.stringify(overSummary.ballsData)}, eventType: ${event.type}`);
-            // Merge logic: Append +W to the last ball string
-            // We know the last ball was the 'wide' or 'no ball' trigger.
-            let lastVal = overSummary.ballsData[overSummary.ballsData.length - 1];
+        // Generate Commentary - use player names from event if provided
+        const bowlerName = (event as any).bowlerName || 'Unknown Bowler';
+        const batsmanName = (event as any).batsmanName || 'Unknown Batsman';
 
-            // Avoid double appending and only append for Wicket events
-            if (event.type === 'WICKET' && !lastVal.includes('W')) {
-                lastVal += '+W';
+        let ballObj: any;
+
+        if (event.type === 'WICKET' && state.striker) {
+            ballObj = await this.commentaryGenerator.createWicketHighlight(
+                lastBall as any,
+                state.striker.playerId,
+                event.wicketType || 'bowled',
+                bowlerName,
+                batsmanName,
+                undefined
+            );
+        } else {
+            ballObj = await this.commentaryGenerator.generateDefaultBallCommentary(
+                lastBall as any,
+                bowlerName,
+                batsmanName
+            );
+        }
+
+        // Set the label correctly
+        ballObj.ballLabel = ballLabel;
+        ballObj.timestamp = new Date();
+
+        // Add player IDs and names
+        if (state.bowler) {
+            ballObj.bowlerId = state.bowler.playerId;
+            ballObj.bowlerName = bowlerName;
+        }
+        if (state.striker) {
+            ballObj.batsmanId = state.striker.playerId;
+            ballObj.batsmanName = batsmanName;
+        }
+
+        // Capture live status at ball time
+        if (state.liveStatus) {
+            ballObj.odds = {
+                team1Odds: state.liveStatus.oddsBlue,
+                team2Odds: state.liveStatus.oddsRed,
+            };
+            ballObj.session = {
+                sessionName: state.liveStatus.oddsTeam || 'Session',
+                sessionValue: state.liveStatus.session,
+                sessionBlue: state.liveStatus.sessionBlue,
+                sessionRed: state.liveStatus.sessionRed,
+            };
+            ballObj.lambi = {
+                lambiValue: state.liveStatus.lambi,
+                lambiBlue: state.liveStatus.lambiBlue,
+                lambiRed: state.liveStatus.lambiRed,
+            };
+        }
+
+        if (isComposite && overSummary.ballsData.length > 0) {
+            const lastBallObj = overSummary.ballsData[overSummary.ballsData.length - 1];
+            if (event.type === 'WICKET' && !lastBallObj.ballLabel.includes('W')) {
+                lastBallObj.ballLabel += '+W';
+                // Update to wicket type if it was just a ball
+                lastBallObj.type = ballObj.type;
+                lastBallObj.highlightData = ballObj.highlightData;
+                lastBallObj.commentary = ballObj.commentary;
             }
-            // Update the last entry
-            overSummary.ballsData[overSummary.ballsData.length - 1] = lastVal;
             overSummary.markModified('ballsData');
         } else {
-            console.log(`[DEBUG] Pushing new ball. isComposite: ${isComposite}, len: ${overSummary.ballsData.length}`);
-            // Add ball to ballsData
-            overSummary.ballsData.push(ballValue);
+            overSummary.ballsData.push(ballObj);
+        }
+
+        // Check for milestones after pushing the ball
+        if (state.striker && event.type === 'RUN') {
+            const milestone = await this.commentaryGenerator.checkBatsmanMilestone(
+                inning.matchId,
+                inning._id,
+                state.striker.playerId,
+                state.striker.runs
+            );
+
+            if (milestone) {
+                const milestoneObj = await this.commentaryGenerator.createMilestoneHighlight(
+                    {
+                        matchId: inning.matchId,
+                        inningId: inning._id,
+                        playerId: state.striker.playerId,
+                        type: milestone === '50' ? 'fifty' : milestone === '100' ? 'century' : 'double_century',
+                        value: parseInt(milestone),
+                        balls: state.striker.balls,
+                        overNumber: currentOver,
+                        ballNumber: inning.totalBalls % 6 || 6,
+                        timestamp: new Date(),
+                    } as any,
+                    batsmanName
+                );
+                overSummary.ballsData.push(milestoneObj);
+            }
         }
 
         // Update totals
-        // For composite events, we only add the delta from the event
         const eventRuns = event.runs || 0;
         const eventExtras = event.extras || 0;
-        // Total runs in this event (for composite, the previous part already added its runs)
         const totalRunsInEvent = eventRuns + eventExtras;
 
         overSummary.runs += totalRunsInEvent;
-        // Check if this specific event triggered a wicket
         if (event.type === 'WICKET') overSummary.wickets += 1;
         if (eventExtras > 0) overSummary.extras += eventExtras;
 
-        // Maiden check
         const isBye = event.type === 'BYE';
         const isLegBye = event.type === 'LEG_BYE';
         const isPenalty = event.type === 'PENALTY';

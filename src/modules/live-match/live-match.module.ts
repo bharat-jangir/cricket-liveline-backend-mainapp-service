@@ -11,8 +11,10 @@ import { MatchSquad, MatchSquadSchema } from '../../entities/match-squad.entity'
 import { OverSummary, OverSummarySchema } from '../../entities/over-summary.entity';
 import { MatchDetails, MatchDetailsSchema } from '../../entities/match-details.entity';
 import { LiveMatchSession, LiveMatchSessionSchema } from '../../entities/live-match-session.entity';
+import { Player, PlayerSchema } from '../../entities/player.entity';
 import { ResponseService } from '../../common/services/response.service';
 import { ScoreEngineModule } from './score-engine/score-engine.module';
+import { CommentaryGeneratorService } from './services/commentary-generator.service';
 
 
 @Module({
@@ -28,10 +30,11 @@ import { ScoreEngineModule } from './score-engine/score-engine.module';
       { name: OverSummary.name, schema: OverSummarySchema },
       { name: MatchDetails.name, schema: MatchDetailsSchema },
       { name: LiveMatchSession.name, schema: LiveMatchSessionSchema },
+      { name: Player.name, schema: PlayerSchema },
     ]),
   ],
   controllers: [LiveMatchController],
-  providers: [LiveMatchService, ResponseService],
+  providers: [LiveMatchService, ResponseService, CommentaryGeneratorService],
   exports: [LiveMatchService],
 })
 export class LiveMatchModule { }

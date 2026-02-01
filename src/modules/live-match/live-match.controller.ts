@@ -318,7 +318,7 @@ export class LiveMatchController {
   }
 
   @MessagePattern('live-match.handleSimpleEvent')
-  async handleSimpleEvent(@Payload() payload: { matchId: string; event: string }) {
+  async handleSimpleEvent(@Payload() payload: { matchId: string; event: string; bowlerName?: string; batsmanName?: string }) {
     try {
       console.log('handleSimpleEvent payload', payload);
 
@@ -326,7 +326,13 @@ export class LiveMatchController {
       const event = this.parseSimpleEvent(payload.event);
 
       // Use existing score engine with parsed event but preserve original event string
-      const ballEvent: any = { ...event, matchId: payload.matchId, originalEvent: payload.event };
+      const ballEvent: any = {
+        ...event,
+        matchId: payload.matchId,
+        originalEvent: payload.event,
+        bowlerName: payload.bowlerName,
+        batsmanName: payload.batsmanName
+      };
       const result = await this.scoreEngineService.handleEvent(payload.matchId, ballEvent);
 
       // Check if wicket selection is required
@@ -543,6 +549,39 @@ export class LiveMatchController {
       return result;
     } catch (error: any) {
       this.logger.error('Error in getRecentOvers', error.stack || error.message || error);
+      throw error;
+    }
+  }
+
+  @MessagePattern('live-match.getCommentary')
+  async getCommentary(@Payload() payload: { matchId: string; inningId?: string }) {
+    try {
+      const result = await this.liveMatchService.getMatchCommentary(payload.matchId, payload.inningId);
+      return result;
+    } catch (error: any) {
+      this.logger.error('Error in getCommentary', error.stack || error.message || error);
+      throw error;
+    }
+  }
+
+  @MessagePattern('live-match.updateCommentary')
+  async updateCommentary(@Payload() payload: { commentaryId: string; commentary: string }) {
+    try {
+      const result = await this.liveMatchService.updateCommentary(payload.commentaryId, payload.commentary);
+      return result;
+    } catch (error: any) {
+      this.logger.error('Error in updateCommentary', error.stack || error.message || error);
+      throw error;
+    }
+  }
+
+  @MessagePattern('live-match.deleteCommentary')
+  async deleteCommentary(@Payload() payload: { commentaryId: string }) {
+    try {
+      const result = await this.liveMatchService.deleteCommentary(payload.commentaryId);
+      return result;
+    } catch (error: any) {
+      this.logger.error('Error in deleteCommentary', error.stack || error.message || error);
       throw error;
     }
   }
