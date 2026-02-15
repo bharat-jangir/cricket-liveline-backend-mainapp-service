@@ -76,6 +76,13 @@ export class Match {
 
   @Prop({
     type: Types.ObjectId,
+    ref: 'Venue',
+    default: null,
+  })
+  venueId?: Types.ObjectId;
+
+  @Prop({
+    type: Types.ObjectId,
     ref: 'Team',
     required: true,
   })
@@ -115,14 +122,14 @@ export class Match {
 
   @Prop({
     min: 1,
-    max: 4,
+    // max: 4, // Removed max limit
     default: 1,
   })
   currentInning: number;
 
   @Prop({
-    min: 2,
-    max: 4,
+    min: 1,
+    // max: 4, // Removed max limit
     default: 2,
   })
   totalInnings: number;
@@ -139,36 +146,123 @@ export class Match {
   @Prop({ default: 0 })
   priority: number;
 
-  @Prop({ trim: true })
-  toss?: string;
+  @Prop({ default: 0 })
+  superOverCount: number;
 
   @Prop({
-    type: Types.ObjectId,
-    ref: 'Umpire',
-    default: null,
+    type: {
+      tossText: { type: String, trim: true },
+      winnerId: { type: Types.ObjectId, ref: 'Team' },
+      elected: { type: String, enum: ['bat', 'bowl'] },
+      tossTime: { type: Date },
+    },
+    default: null
   })
-  straightUmpireId?: Types.ObjectId;
+  toss?: {
+    tossText?: string;
+    winnerId?: Types.ObjectId;
+    elected?: 'bat' | 'bowl';
+    tossTime?: Date;
+  };
 
   @Prop({
-    type: Types.ObjectId,
-    ref: 'Umpire',
-    default: null,
+    type: {
+      winnerId: { type: Types.ObjectId, ref: 'Team' },
+      resultType: { type: String, enum: ['normal', 'tie', 'no_result', 'super_over'] },
+      winBy: { type: String, enum: ['runs', 'wickets', 'innings', 'tie', 'no_result'] },
+      margin: { type: Number },
+      resultText: { type: String, trim: true },
+      winningTeamId: { type: Types.ObjectId, ref: 'Team' },
+      losingTeamId: { type: Types.ObjectId, ref: 'Team' },
+      playerOfMatch: { type: Types.ObjectId, ref: 'Player' },
+      playerOfSeries: { type: Types.ObjectId, ref: 'Player' },
+    },
+    default: null
   })
-  legUmpireId?: Types.ObjectId;
+  result?: {
+    winnerId?: Types.ObjectId;
+    resultType?: string;
+    winBy?: string;
+    margin?: number;
+    resultText?: string;
+    winningTeamId?: Types.ObjectId;
+    losingTeamId?: Types.ObjectId;
+    playerOfMatch?: Types.ObjectId;
+    playerOfSeries?: Types.ObjectId;
+  };
 
   @Prop({
-    type: Types.ObjectId,
-    ref: 'Umpire',
-    default: null,
+    type: {
+      umpire1Id: { type: Types.ObjectId, ref: 'Umpire' },
+      umpire2Id: { type: Types.ObjectId, ref: 'Umpire' },
+      thirdUmpireId: { type: Types.ObjectId, ref: 'Umpire' },
+      refereeId: { type: Types.ObjectId, ref: 'Umpire' },
+      reserveUmpireId: { type: Types.ObjectId, ref: 'Umpire' },
+    },
+    default: null
   })
-  thirdUmpireId?: Types.ObjectId;
+  officials?: {
+    umpire1Id?: Types.ObjectId;
+    umpire2Id?: Types.ObjectId;
+    thirdUmpireId?: Types.ObjectId;
+    refereeId?: Types.ObjectId;
+    reserveUmpireId?: Types.ObjectId;
+  };
 
   @Prop({
-    type: Types.ObjectId,
-    ref: 'Umpire',
-    default: null,
+    type: {
+      weather: { type: String, trim: true },
+      temperature: { type: String, trim: true },
+      humidity: { type: String, trim: true },
+      windSpeed: { type: String, trim: true },
+      pitchCondition: { type: String, trim: true },
+      pitchReport: { type: String, maxlength: 2000 },
+    },
+    default: null
   })
-  refereeId?: Types.ObjectId;
+  conditions?: {
+    weather?: string;
+    temperature?: string;
+    humidity?: string;
+    windSpeed?: string;
+    pitchCondition?: string;
+    pitchReport?: string;
+  };
+
+  @Prop({
+    type: {
+      team1Wins: { type: Number, default: 0 },
+      team2Wins: { type: Number, default: 0 },
+    },
+    default: null
+  })
+  headToHead?: {
+    team1Wins?: number;
+    team2Wins?: number;
+  };
+
+  @Prop({
+    type: {
+      team1Form: { type: String, trim: true },
+      team2Form: { type: String, trim: true },
+    },
+    default: null
+  })
+  teamForm?: {
+    team1Form?: string;
+    team2Form?: string;
+  };
+
+  @Prop({ default: false })
+  drsAvailable: boolean;
+
+  @Prop({
+    default: 0,
+    min: 0,
+  })
+  powerplayOvers: number;
+
+
 
   @Prop({ trim: true })
   pitchReport?: string;
@@ -191,6 +285,61 @@ export class Match {
     default: null,
   })
   createdBy?: Types.ObjectId;
+
+  // --- Fields moved from LiveMatchStatus ---
+
+  // Odds fields
+  @Prop({ type: String, default: '' })
+  oddsTeam?: string;
+
+  @Prop({ type: Number, default: 0 })
+  oddsBlue?: number;
+
+  @Prop({ type: Number, default: 0 })
+  oddsRed?: number;
+
+  @Prop({ type: Number, default: 0 })
+  session?: number;
+
+  @Prop({ type: Number, default: 0 })
+  sessionBlue?: number;
+
+  @Prop({ type: Number, default: 0 })
+  sessionRed?: number;
+
+  @Prop({ type: Number, default: 0 })
+  lambi?: number;
+
+  @Prop({ type: Number, default: 0 })
+  lambiBlue?: number;
+
+  @Prop({ type: Number, default: 0 })
+  lambiRed?: number;
+
+  // Status flags
+  @Prop({ default: true })
+  isMatchNew: boolean;
+
+  @Prop({ default: false })
+  noScorecards: boolean;
+
+  @Prop({ default: false })
+  viewMode: boolean;
+
+  @Prop({ default: false })
+  isNotShowing: boolean;
+
+  @Prop({ default: false })
+  dls: boolean;
+
+  @Prop({ default: false })
+  noCommentry: boolean;
+
+  @Prop({ default: false })
+  onOC: boolean;
+
+  @Prop({ default: '' })
+  comment2: string;
 }
 
 export const MatchSchema = SchemaFactory.createForClass(Match);

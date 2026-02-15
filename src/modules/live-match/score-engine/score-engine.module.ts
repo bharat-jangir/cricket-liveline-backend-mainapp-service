@@ -3,7 +3,6 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { ScoreEngineService } from './score-engine.service';
 import { LiveMatchModule } from '../live-match.module';
 import { ScoreHistory, ScoreHistorySchema } from '../../../entities/score-history.entity';
-import { LiveMatchStatus, LiveMatchStatusSchema } from '../../../entities/live-match-status.entity';
 import { Match, MatchSchema } from '../../../entities/match.entity';
 import { Inning, InningSchema } from '../../../entities/inning.entity';
 import { BattingScorecard, BattingScorecardSchema } from '../../../entities/batting-scorecard.entity';
@@ -18,7 +17,6 @@ import { CommentaryGeneratorService } from '../services/commentary-generator.ser
     imports: [
         MongooseModule.forFeature([
             { name: ScoreHistory.name, schema: ScoreHistorySchema },
-            { name: LiveMatchStatus.name, schema: LiveMatchStatusSchema },
             { name: Match.name, schema: MatchSchema },
             { name: Inning.name, schema: InningSchema },
             { name: BattingScorecard.name, schema: BattingScorecardSchema },

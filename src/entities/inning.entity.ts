@@ -15,9 +15,18 @@ export class Inning {
   @Prop({
     required: true,
     min: 1,
-    max: 4,
+    // max: 4, // Removed max limit to support Super Overs
   })
   inningNumber: number;
+
+  @Prop({
+    enum: ['regular', 'super_over'],
+    default: 'regular',
+  })
+  type: string;
+
+  @Prop({ default: 0 })
+  superOverNumber: number;
 
   @Prop({
     type: Types.ObjectId,
@@ -143,6 +152,63 @@ export class Inning {
     tr: any;
     playerId: Types.ObjectId;
   };
+
+  // --- Fields moved from LiveMatchStatus (Live State) ---
+
+  @Prop({
+    type: Types.ObjectId,
+    ref: 'Player',
+    default: null,
+  })
+  currentStrikerId?: Types.ObjectId;
+
+  @Prop({
+    type: Types.ObjectId,
+    ref: 'Player',
+    default: null,
+  })
+  currentNonStrikerId?: Types.ObjectId;
+
+  @Prop({
+    type: Types.ObjectId,
+    ref: 'Player',
+    default: null,
+  })
+  currentBowlerId?: Types.ObjectId;
+
+  @Prop({
+    default: 0,
+    min: 0,
+  })
+  currentOver: number;
+
+  @Prop({
+    default: '0.0',
+  })
+  currentBall: string;
+
+  // Granular play state (e.g., "Ball in Air", "Review Pending")
+  @Prop({
+    default: '',
+  })
+  currentPlayState?: string;
+
+  @Prop({ default: false })
+  powerPlay: boolean;
+
+  @Prop({ default: false })
+  requiresWicketSelection?: boolean;
+
+  @Prop({ type: Schema.Types.Mixed, default: null })
+  wicketContext?: {
+    eventType: string;
+    runs: number;
+    extras: number;
+  };
+
+  // Optional cached score string for quick access (e.g., "120/3")
+  @Prop({ default: '0/0' })
+  score: string;
 }
 
 export const InningSchema = SchemaFactory.createForClass(Inning);

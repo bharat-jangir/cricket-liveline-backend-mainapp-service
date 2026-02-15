@@ -1,14 +1,12 @@
 import { Injectable, HttpStatus, Logger } from '@nestjs/common';
 import { InjectModel, InjectConnection } from '@nestjs/mongoose';
 import { Model, Types, Connection, ClientSession } from 'mongoose';
-import { LiveMatchStatus } from '../../entities/live-match-status.entity';
 import { Match } from '../../entities/match.entity';
 import { Inning } from '../../entities/inning.entity';
 import { BattingScorecard } from '../../entities/batting-scorecard.entity';
 import { BowlingScorecard } from '../../entities/bowling-scorecard.entity';
 import { MatchSquad } from '../../entities/match-squad.entity';
 import { OverSummary } from '../../entities/over-summary.entity';
-import { MatchDetails } from '../../entities/match-details.entity';
 import { UpdateLiveStatusDto } from './dto/update-live-status.dto';
 import { UpdateBatsmanDto } from './dto/update-batsman.dto';
 import { UpdateBowlerDto } from './dto/update-bowler.dto';
@@ -26,14 +24,12 @@ export class LiveMatchService {
   private readonly logger = new Logger(LiveMatchService.name);
 
   constructor(
-    @InjectModel(LiveMatchStatus.name) private liveMatchStatusModel: Model<LiveMatchStatus>,
     @InjectModel(Match.name) private matchModel: Model<Match>,
     @InjectModel(Inning.name) private inningModel: Model<Inning>,
     @InjectModel(BattingScorecard.name) private battingScorecardModel: Model<BattingScorecard>,
     @InjectModel(BowlingScorecard.name) private bowlingScorecardModel: Model<BowlingScorecard>,
     @InjectModel(MatchSquad.name) private matchSquadModel: Model<MatchSquad>,
     @InjectModel(OverSummary.name) private overSummaryModel: Model<OverSummary>,
-    @InjectModel(MatchDetails.name) private matchDetailsModel: Model<MatchDetails>,
     @InjectModel(LiveMatchSession.name) private liveMatchSessionModel: Model<LiveMatchSession>,
     @InjectConnection() private readonly connection: Connection,
     private readonly responseService: ResponseService,
@@ -167,11 +163,13 @@ export class LiveMatchService {
       if (updateDto.ballsPerOver !== undefined) updateData.ballsPerOver = updateDto.ballsPerOver;
       if (updateDto.oversPerInning !== undefined) updateData.oversPerInning = updateDto.oversPerInning;
       if (updateDto.maxBowlerLimit !== undefined) updateData.maxBowlerLimit = updateDto.maxBowlerLimit;
+      if (updateDto.matchFormat) updateData.matchFormat = updateDto.matchFormat.toLowerCase();
 
-      const matchDetails = await this.matchDetailsModel.findOneAndUpdate(
-        { matchId: matchObjectId },
-        updateData,
-        { new: true, upsert: true }
+      // Update the match directly
+      const match = await this.matchModel.findByIdAndUpdate(
+        matchObjectId,
+        { $set: updateData },
+        { new: true, runValidators: true }
       )
         .populate('officials.umpire1Id', 'name')
         .populate('officials.umpire2Id', 'name')
@@ -180,19 +178,19 @@ export class LiveMatchService {
         .populate('venueId', 'name city country')
         .lean();
 
-      // Also update the main Match entity for consistency
-      const matchUpdateData: any = {};
-      if (updateDto.ballsPerOver !== undefined) matchUpdateData.ballsPerOver = updateDto.ballsPerOver;
-      if (updateDto.oversPerInning !== undefined) matchUpdateData.oversPerInning = updateDto.oversPerInning;
-      if (updateDto.maxBowlerLimit !== undefined) matchUpdateData.maxBowlerLimit = updateDto.maxBowlerLimit;
-      if (updateDto.matchFormat) matchUpdateData.matchFormat = updateDto.matchFormat.toLowerCase();
-
-      if (Object.keys(matchUpdateData).length > 0) {
-        await this.matchModel.findByIdAndUpdate(matchObjectId, matchUpdateData);
+      if (!match) {
+        return this.responseService.error(
+          'Match not found',
+          'MATCH_NOT_FOUND',
+          'Match not found',
+          undefined,
+          null,
+          HttpStatus.NOT_FOUND,
+        );
       }
 
       return this.responseService.successWithSingle(
-        matchDetails,
+        match, // Return match as it now contains details
         'Match details updated successfully',
         'MATCH_DETAILS_UPDATED',
         'Match details updated successfully',
@@ -225,8 +223,8 @@ export class LiveMatchService {
         );
       }
 
-      const matchDetails = await this.matchDetailsModel
-        .findOne({ matchId: new Types.ObjectId(matchId) })
+      const match = await this.matchModel
+        .findById(matchId)
         .populate('officials.umpire1Id', 'name')
         .populate('officials.umpire2Id', 'name')
         .populate('officials.thirdUmpireId', 'name')
@@ -236,7 +234,7 @@ export class LiveMatchService {
         .lean();
 
       return this.responseService.successWithSingle(
-        matchDetails || {},
+        match || {},
         'Match details retrieved successfully',
         'MATCH_DETAILS_RETRIEVED',
         'Match details retrieved successfully',
@@ -269,48 +267,94 @@ export class LiveMatchService {
         );
       }
 
-      const [liveStatusDoc, matchDetails] = await Promise.all([
-        this.liveMatchStatusModel
-          .findOne({ matchId: new Types.ObjectId(matchId) })
-          .populate('battingTeamId', 'name shortName code logo')
-          .populate('bowlingTeamId', 'name shortName code logo')
-          .lean(),
-        this.matchDetailsModel
-          .findOne({ matchId: new Types.ObjectId(matchId) })
-          .select('toss')
-          .populate('toss.winnerId', 'name shortName code logo')
-          .lean()
-      ]);
+      const matchObjectId = new Types.ObjectId(matchId);
 
-      if (!liveStatusDoc) {
-        // Even if live status doesn't exist, we might have match details with toss
-        if (matchDetails && matchDetails.toss) {
-          return this.responseService.successWithSingle(
-            { toss: matchDetails.toss },
-            'Toss information retrieved',
-            'TOSS_RETRIEVED',
-            'Toss information retrieved',
-            undefined,
-            HttpStatus.OK,
-          );
-        }
+      const match = await this.matchModel
+        .findById(matchObjectId)
+        .populate('toss.winnerId', 'name shortName code logo')
+        .lean();
 
-        // Return default status if not found
-        return this.responseService.successWithSingle(
-          null,
-          'Live status not found for this match',
-          'LIVE_STATUS_NOT_FOUND',
-          'Live status not found for this match',
+      if (!match) {
+        return this.responseService.error(
+          'Match not found',
+          'MATCH_NOT_FOUND',
+          'Match not found',
           undefined,
-          HttpStatus.OK,
+          null,
+          HttpStatus.NOT_FOUND,
         );
       }
 
-      // Merge toss into liveStatus
-      const liveStatus = {
-        ...liveStatusDoc,
-        toss: matchDetails?.toss || undefined,
+      const currentInning = await this.inningModel.findOne({
+        matchId: matchObjectId,
+        inningNumber: match.currentInning
+      })
+        .populate('battingTeamId', 'name shortName code logo')
+        .populate('bowlingTeamId', 'name shortName code logo')
+        .lean();
+
+      // Construct return object mimicking old LiveMatchStatus structure
+      const liveStatus: any = {
+        matchId: match._id,
+        currentInning: match.currentInning,
+        toss: match?.toss,
+
+        // Match level status flags
+        isMatchNew: match.isMatchNew,
+        viewMode: match.viewMode,
+        isNotShowing: match.isNotShowing,
+        noCommentry: match.noCommentry,
+        onOC: match.onOC,
+        comment2: match.comment2,
+        matchStatus: match.status,
+        matchState: match.matchState,
+
+        // Odds / Session from Match
+        oddsTeam: match.oddsTeam,
+        oddsBlue: match.oddsBlue,
+        oddsRed: match.oddsRed,
+        session: match.session,
+        sessionBlue: match.sessionBlue,
+        sessionRed: match.sessionRed,
+        lambi: match.lambi,
+        lambiBlue: match.lambiBlue,
+        lambiRed: match.lambiRed,
+
+        // Config
+        ballsPerOver: match.ballsPerOver,
+        oversPerInning: match.oversPerInning,
       };
+
+      if (currentInning) {
+        // Inning level data
+        liveStatus.battingTeamId = currentInning.battingTeamId;
+        liveStatus.bowlingTeamId = currentInning.bowlingTeamId;
+
+        // State
+        const ballsPerOver = match.ballsPerOver || 6;
+        const currentOver = Math.floor(currentInning.totalBalls / ballsPerOver);
+        const currentBall = currentInning.totalBalls % ballsPerOver;
+
+        liveStatus.score = `${currentInning.totalRuns}/${currentInning.totalWickets}`;
+        liveStatus.overs = `${currentOver}.${currentBall}`;
+        liveStatus.balls = currentInning.totalBalls;
+        liveStatus.currentOver = currentOver;
+        liveStatus.currentBall = currentInning.currentBall; // String value (e.g., 'check')
+
+        // Players
+        liveStatus.currentStrikerId = currentInning.currentStrikerId;
+        liveStatus.currentNonStrikerId = currentInning.currentNonStrikerId;
+        liveStatus.currentBowlerId = currentInning.currentBowlerId;
+
+        liveStatus.lastWicket = currentInning.lastWicket;
+
+        // Calculated Run Rate
+        if (currentInning.totalBalls > 0) {
+          liveStatus.runRate = (currentInning.totalRuns / currentInning.totalBalls) * ballsPerOver;
+        } else {
+          liveStatus.runRate = 0;
+        }
+      }
 
       return this.responseService.successWithSingle(
         liveStatus,
@@ -351,8 +395,8 @@ export class LiveMatchService {
       // Get current inning if not specified
       let targetInning = inningNumber;
       if (!targetInning) {
-        const liveStatus = await this.liveMatchStatusModel.findOne({ matchId: matchObjectId }).lean();
-        targetInning = liveStatus?.currentInning || 1;
+        const match = await this.matchModel.findById(matchObjectId).select('currentInning').lean();
+        targetInning = match?.currentInning || 1;
       }
 
       const inning = await this.inningModel.findOne({
@@ -440,141 +484,149 @@ export class LiveMatchService {
           );
         }
 
-        // Convert string IDs to ObjectIds if provided
-        const updateData: any = { ...updateDto };
-        if (updateDto.battingTeamId && Types.ObjectId.isValid(updateDto.battingTeamId)) {
-          updateData.battingTeamId = new Types.ObjectId(updateDto.battingTeamId);
-        }
-        if (updateDto.bowlingTeamId && Types.ObjectId.isValid(updateDto.bowlingTeamId)) {
-          updateData.bowlingTeamId = new Types.ObjectId(updateDto.bowlingTeamId);
-        }
+        // 1. Handle Inning Transition / Creation
+        let currentInningNum = match.currentInning;
+        if (updateDto.currentInning !== undefined && updateDto.currentInning !== match.currentInning) {
+          // Update match current inning
+          match.currentInning = updateDto.currentInning;
+          await match.save({ session: s });
+          currentInningNum = updateDto.currentInning;
 
-        // Check if currentInning is being updated and we need to handle transitions
-        if (updateData.currentInning !== undefined) {
-          try {
-            const existingStatus = await this.liveMatchStatusModel.findOne({ matchId: matchObjectId }).session(s);
-            if (existingStatus && existingStatus.currentInning !== updateData.currentInning) {
-              // Check if target inning already exists in the database
-              const targetInning = await this.inningModel.findOne({
+          // Ensure target inning exists
+          const existingTargetInning = await this.inningModel.findOne({
+            matchId: matchObjectId,
+            inningNumber: currentInningNum
+          }).session(s);
+
+          if (!existingTargetInning) {
+            // Create new inning if it doesn't exist
+            // Infer teams: swap from previous inning if possible
+            let battingTeamId, bowlingTeamId;
+
+            // If teams are provided in DTO, use them
+            if (updateDto.battingTeamId) battingTeamId = new Types.ObjectId(updateDto.battingTeamId);
+            if (updateDto.bowlingTeamId) bowlingTeamId = new Types.ObjectId(updateDto.bowlingTeamId);
+
+            if (!battingTeamId || !bowlingTeamId) {
+              // Try to fetch previous inning to swap
+              const prevInning = await this.inningModel.findOne({
                 matchId: matchObjectId,
-                inningNumber: updateData.currentInning
+                inningNumber: currentInningNum - 1
               }).session(s);
 
-              if (!targetInning) {
-                // NEW INNING: Apply swap logic and reset stats only if teams not explicitly provided
-                if (updateData.currentInning > existingStatus.currentInning) {
-                  if (updateData.battingTeamId === undefined && updateData.bowlingTeamId === undefined) {
-                    updateData.battingTeamId = existingStatus.bowlingTeamId;
-                    updateData.bowlingTeamId = existingStatus.battingTeamId;
-
-                    // Reset live stats for new inning
-                    updateData.score = "0/0";
-                    updateData.overs = "0.0";
-                    updateData.balls = 0;
-                    updateData.currentOver = 0;
-                    updateData.currentBall = 0;
-                    updateData.runRate = 0;
-                    updateData.requiredRunRate = 0;
-                    updateData.target = 0;
-                    updateData.ballsRemaining = 0;
-                  }
-                }
+              if (prevInning) {
+                if (!battingTeamId) battingTeamId = prevInning.bowlingTeamId;
+                if (!bowlingTeamId) bowlingTeamId = prevInning.battingTeamId;
               } else {
-                // EXISTING INNING: Sync live status with existing inning data only if teams not explicitly provided
-                if (updateData.battingTeamId === undefined && updateData.bowlingTeamId === undefined) {
-                  updateData.battingTeamId = targetInning.battingTeamId;
-                  updateData.bowlingTeamId = targetInning.bowlingTeamId;
-
-                  // Sync stats from existing inning record
-                  updateData.score = `${targetInning.totalRuns}/${targetInning.totalWickets}`;
-                  const totalOvers = Math.floor(targetInning.totalBalls / 6);
-                  const remainderBalls = targetInning.totalBalls % 6;
-                  updateData.overs = `${totalOvers}.${remainderBalls}`;
-                  updateData.balls = targetInning.totalBalls;
-                  updateData.currentOver = totalOvers;
-                  updateData.currentBall = remainderBalls;
-                }
+                // Fallback to match teams (Team A bats first default?)
+                // This is a crude fallback, ideally should be explicit
+                if (!battingTeamId) battingTeamId = match.teamAId as any;
+                if (!bowlingTeamId) bowlingTeamId = match.teamBId as any;
               }
             }
-          } catch (inningError) {
-            this.logger.error('Error in inning transition logic:', inningError);
-            // Continue with basic update if inning logic fails
+
+            await this.inningModel.create([{
+              matchId: matchObjectId,
+              inningNumber: currentInningNum,
+              battingTeamId,
+              bowlingTeamId,
+              totalRuns: 0,
+              totalWickets: 0,
+              totalBalls: 0,
+              totalOvers: 0
+            }], { session: s });
           }
         }
 
-        // Sync scoreboard updates to Inning entity to prevent ScoreEngine from reverting manual changes
-        if (updateData.score || updateData.overs) {
-          this.logger.log(`[SYNC] Manual scoreboard update detected for match ${matchId}: score=${updateData.score}, overs=${updateData.overs}`);
-          try {
-            const currentStatus = await this.liveMatchStatusModel.findOne({ matchId: matchObjectId }).session(s);
-            const inningNum = (updateData.currentInning !== undefined) ? updateData.currentInning : (currentStatus?.currentInning || 1);
-            this.logger.log(`[SYNC] Target Inning: ${inningNum}`);
+        // 2. Prepare Updates
+        const inningUpdate: any = {};
+        const matchUpdate: any = {};
 
-            const inningUpdate: any = {};
+        // Match Level Updates
+        if (updateDto.ballsPerOver !== undefined) matchUpdate.ballsPerOver = updateDto.ballsPerOver;
+        if (updateDto.oversPerInning !== undefined) matchUpdate.oversPerInning = updateDto.oversPerInning;
 
-            if (updateData.score) {
-              const [runs, wickets] = updateData.score.split('/').map(n => parseInt(n, 10));
-              if (!isNaN(runs)) inningUpdate.totalRuns = runs;
-              if (!isNaN(wickets)) inningUpdate.totalWickets = wickets;
-            }
+        // Odds / Session / Lambi
+        if (updateDto.oddsTeam !== undefined) matchUpdate.oddsTeam = updateDto.oddsTeam;
+        if (updateDto.oddsBlue !== undefined) matchUpdate.oddsBlue = updateDto.oddsBlue;
+        if (updateDto.oddsRed !== undefined) matchUpdate.oddsRed = updateDto.oddsRed;
+        if (updateDto.session !== undefined) matchUpdate.session = updateDto.session;
+        if (updateDto.sessionBlue !== undefined) matchUpdate.sessionBlue = updateDto.sessionBlue;
+        if (updateDto.sessionRed !== undefined) matchUpdate.sessionRed = updateDto.sessionRed;
+        if (updateDto.lambi !== undefined) matchUpdate.lambi = updateDto.lambi;
+        if (updateDto.lambiBlue !== undefined) matchUpdate.lambiBlue = updateDto.lambiBlue;
+        if (updateDto.lambiRed !== undefined) matchUpdate.lambiRed = updateDto.lambiRed;
 
-            if (updateData.overs) {
-              const [overPart, ballPart] = updateData.overs.split('.').map(n => parseInt(n, 10));
-              if (!isNaN(overPart)) {
-                const totalBalls = (overPart * 6) + (ballPart || 0);
-                inningUpdate.totalBalls = totalBalls;
-                inningUpdate.totalOvers = overPart;
+        // Flags
+        if (updateDto.isMatchNew !== undefined) matchUpdate.isMatchNew = updateDto.isMatchNew;
+        if (updateDto.viewMode !== undefined) matchUpdate.viewMode = updateDto.viewMode;
+        if (updateDto.isNotShowing !== undefined) matchUpdate.isNotShowing = updateDto.isNotShowing;
+        if (updateDto.noCommentry !== undefined) matchUpdate.noCommentry = updateDto.noCommentry;
+        if (updateDto.onOC !== undefined) matchUpdate.onOC = updateDto.onOC;
+        if (updateDto.comment2 !== undefined) matchUpdate.comment2 = updateDto.comment2;
+        if (updateDto.matchStatus !== undefined) matchUpdate.status = updateDto.matchStatus;
+        if (updateDto.matchState !== undefined) matchUpdate.matchState = updateDto.matchState;
 
-                // Update LiveMatchStatus fields for immediate consistency
-                updateData.balls = totalBalls;
-                updateData.currentOver = overPart;
-                updateData.currentBall = String(ballPart || 0);
-              }
-            }
 
-            if (Object.keys(inningUpdate).length > 0) {
-              this.logger.log(`[SYNC] Updating Inning ${inningNum} for match ${matchId} with data: ${JSON.stringify(inningUpdate)}`);
+        // Inning Level Updates
+        if (updateDto.battingTeamId && Types.ObjectId.isValid(updateDto.battingTeamId)) {
+          inningUpdate.battingTeamId = new Types.ObjectId(updateDto.battingTeamId);
+        }
+        if (updateDto.bowlingTeamId && Types.ObjectId.isValid(updateDto.bowlingTeamId)) {
+          inningUpdate.bowlingTeamId = new Types.ObjectId(updateDto.bowlingTeamId);
+        }
 
-              // Verify if inning exists before update for better logging
-              const existingInning = await this.inningModel.findOne({ matchId: matchObjectId, inningNumber: inningNum }).session(s);
-              if (!existingInning) {
-                this.logger.warn(`[SYNC] WARNING: Inning ${inningNum} not found in DB for match ${matchId}. Score sync might fail.`);
-              } else {
-                this.logger.log(`[SYNC] Current Inning values: totalRuns=${existingInning.totalRuns}, totalBalls=${existingInning.totalBalls}`);
-              }
+        // Manual Score Updates
+        if (updateDto.score) {
+          const [runs, wickets] = updateDto.score.split('/').map(n => parseInt(n, 10));
+          if (!isNaN(runs)) inningUpdate.totalRuns = runs;
+          if (!isNaN(wickets)) inningUpdate.totalWickets = wickets;
+        }
 
-              const updatedInning = await this.inningModel.findOneAndUpdate(
-                { matchId: matchObjectId, inningNumber: inningNum },
-                { $set: inningUpdate },
-                { session: s, new: true, upsert: true } // Use upsert: true to be safe, though it should exist
-              );
-
-              if (updatedInning) {
-                this.logger.log(`[SYNC] Success: Inning ${inningNum} updated. New totalRuns=${updatedInning.totalRuns}, totalBalls=${updatedInning.totalBalls}`);
-              }
-            }
-          } catch (syncError) {
-            this.logger.error(`[SYNC] ERROR during synchronization: ${syncError.message}`, syncError.stack);
+        if (updateDto.overs) {
+          const [overPart, ballPart] = updateDto.overs.split('.').map(n => parseInt(n, 10));
+          if (!isNaN(overPart)) {
+            const totalBalls = (overPart * 6) + (ballPart || 0);
+            inningUpdate.totalBalls = totalBalls;
+            inningUpdate.totalOvers = overPart;
+            inningUpdate.currentBall = String(ballPart || 0); // Update current ball string
           }
         }
 
-        // Update or create live status
-        const liveStatus = await this.liveMatchStatusModel.findOneAndUpdate(
-          { matchId: matchObjectId },
-          {
-            ...updateData,
-            lastUpdated: new Date(),
-          },
-          { new: true, upsert: true, session: s }
-        )
-          .populate('battingTeamId', 'name shortName code logo')
-          .populate('bowlingTeamId', 'name shortName code logo')
-          .lean();
+        // Explicitly update balls if provided (override calculation from overs)
+        if (updateDto.balls !== undefined) {
+          inningUpdate.totalBalls = updateDto.balls;
+          inningUpdate.totalOvers = Math.floor(updateDto.balls / 6);
+        }
 
-        this.logger.log(`Updated live status:`, JSON.stringify(liveStatus));
+        // Update Active Players
+        if (updateDto.currentStrikerId) inningUpdate.currentStrikerId = updateDto.currentStrikerId;
+        if (updateDto.currentNonStrikerId) inningUpdate.currentNonStrikerId = updateDto.currentNonStrikerId;
+        if (updateDto.currentBowlerId) inningUpdate.currentBowlerId = updateDto.currentBowlerId;
+
+        // 3. Apply Updates
+        if (Object.keys(matchUpdate).length > 0) {
+          await this.matchModel.findByIdAndUpdate(matchObjectId, { $set: matchUpdate }, { session: s });
+        }
+
+        if (Object.keys(inningUpdate).length > 0) {
+          // Update the current inning (either the one set at start or updated via currentInning)
+          // If currentInning was updated in DTO, we already updated match.currentInning and currentInningNum
+
+          await this.inningModel.findOneAndUpdate(
+            { matchId: matchObjectId, inningNumber: currentInningNum },
+            { $set: inningUpdate },
+            { session: s, upsert: true }
+          );
+        }
+
+        // 4. Return updated status (reuse getLiveStatus logic or construct manually)
+        // For performance/simplicity in transaction, we can just return success msg or fetch fresh
+        // But getLiveStatus isn't transaction-aware usually.
+        // Let's return a basic success object. The frontend usually refetches or we can return mapped data.
 
         return this.responseService.successWithSingle(
-          liveStatus,
+          { ...matchUpdate, ...inningUpdate, matchId }, // Simplified return
           'Live status updated successfully',
           'LIVE_STATUS_UPDATED',
           'Live status updated successfully',
@@ -614,39 +666,53 @@ export class LiveMatchService {
         );
       }
 
+      if (!Types.ObjectId.isValid(switchDto.battingTeamId) || !Types.ObjectId.isValid(switchDto.bowlingTeamId)) {
+        return this.responseService.error(
+          'Invalid team IDs',
+          'INVALID_TEAM_IDS',
+          'Batting and Bowling Team IDs must be valid ObjectIds',
+          undefined,
+          null,
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+
       return await this.runInTransaction(async (session) => {
         const matchObjectId = new Types.ObjectId(matchId);
         const battingTeamId = new Types.ObjectId(switchDto.battingTeamId);
         const bowlingTeamId = new Types.ObjectId(switchDto.bowlingTeamId);
 
-        // Update live status
-        const liveStatus = await this.liveMatchStatusModel.findOneAndUpdate(
-          { matchId: matchObjectId },
-          {
-            battingTeamId,
-            bowlingTeamId,
-            lastUpdated: new Date(),
-          },
-          { new: true, upsert: true, session }
-        )
-          .populate('battingTeamId', 'name shortName code logo')
-          .populate('bowlingTeamId', 'name shortName code logo')
-          .lean();
+        // 1. Get current match state to determine next inning
+        const match = await this.matchModel.findById(matchObjectId).session(session);
+        if (!match) throw new Error('Match not found');
 
-        // Update current inning as well to ensure consistency
-        // This allows initializeScorecardsFromSquad to work correctly
-        const currentInning = liveStatus.currentInning || 1;
-        await this.inningModel.findOneAndUpdate(
-          { matchId: matchObjectId, inningNumber: currentInning },
+        // 2. Increment Inning Number (or keep same if we are just switching teams in current inning? 
+        // Usually switch teams implies new inning in this context, but if it's just correcting teams, it's same inning.
+        // Given previous logic 'Update current inning as well', it implies we might be in existing inning OR creating new.
+        // BUT, looking at updateLiveStatus logic, a transition happens.
+        // Let's assume this functionality is for "Switching Sides" which typically starts the next inning 
+        // OR it might be used to correct the CURRENT inning teams. 
+        // The original code updated `liveStatus` and then `currentInning` in `inningModel`. which implies it targeted CURRENT inning.
+        // Let's safe guard: If inning 1 is done, it should be inning 2. 
+        // If the user manually clicks "Switch Teams", they likely want to Swap Bat/Bowl for the CURRENT inning or Start NEW.
+        // The previous implementation updated the *current* inning. So I will maintain that behavior.
+        // If they want a NEW inning, they should use 'Start Inning' or similar, or I should increment match.currentInning.
+        // However, standard flow is: Inning 1 End -> Switch Teams -> Inning 2 Start.
+
+        // Let's update the CURRENT inning found in match.currentInning.
+        const currentInningNum = match.currentInning || 1;
+
+        const updatedInning = await this.inningModel.findOneAndUpdate(
+          { matchId: matchObjectId, inningNumber: currentInningNum },
           {
             battingTeamId,
             bowlingTeamId,
           },
-          { session }
+          { session, new: true, upsert: true } // Upsert to ensure inning exists
         );
 
         return this.responseService.successWithSingle(
-          liveStatus,
+          { ...updatedInning.toObject(), matchId },
           'Teams switched successfully',
           'TEAMS_SWITCHED',
           'Teams switched successfully',
@@ -655,10 +721,11 @@ export class LiveMatchService {
         );
       });
     } catch (error) {
+      this.logger.error(`Failed to switch teams for match ${matchId}. DTO: ${JSON.stringify(switchDto)} Error: ${error.message} Stack: ${error.stack}`, JSON.stringify(error));
       return this.responseService.error(
         'Failed to switch teams',
         'TEAMS_SWITCH_FAILED',
-        error.message,
+        error.stack,
         undefined,
         null,
         HttpStatus.INTERNAL_SERVER_ERROR,
@@ -684,54 +751,56 @@ export class LiveMatchService {
         const matchObjectId = new Types.ObjectId(matchId);
         const winnerObjectId = new Types.ObjectId(updateTossDto.winnerId);
 
-        // Update or create match details with toss information
-        const matchDetails = await this.matchDetailsModel.findOneAndUpdate(
-          { matchId: matchObjectId },
+        // Update match with toss information
+        const match = await this.matchModel.findByIdAndUpdate(
+          matchObjectId,
           {
-            toss: {
-              tossText: updateTossDto.tossText,
-              winnerId: winnerObjectId,
-              elected: updateTossDto.elected,
-              tossTime: new Date(),
-            },
+            $set: {
+              toss: {
+                tossText: updateTossDto.tossText,
+                winnerId: winnerObjectId,
+                elected: updateTossDto.elected,
+                tossTime: new Date(),
+              }
+            }
           },
-          { new: true, upsert: true, session }
-        );
+          { new: true, upsert: false, session }
+        ).lean();
 
         // Update LiveMatchStatus with teams from toss
-        const match = await this.matchModel.findById(matchObjectId).session(session).lean();
-        if (match) {
+        const matchWithTeams = await this.matchModel.findById(matchObjectId).session(session).lean();
+        if (matchWithTeams) {
           let battingTeamId: Types.ObjectId;
           let bowlingTeamId: Types.ObjectId;
 
-          const isWinnerTeamA = winnerObjectId.toString() === match.teamAId.toString();
+          const isWinnerTeamA = winnerObjectId.toString() === matchWithTeams.teamAId.toString();
 
           if (updateTossDto.elected === 'bat') {
             battingTeamId = winnerObjectId;
-            bowlingTeamId = isWinnerTeamA ? match.teamBId as any : match.teamAId as any;
+            bowlingTeamId = isWinnerTeamA ? matchWithTeams.teamBId as any : matchWithTeams.teamAId as any;
           } else {
             bowlingTeamId = winnerObjectId;
-            battingTeamId = isWinnerTeamA ? match.teamBId as any : match.teamAId as any;
+            battingTeamId = isWinnerTeamA ? matchWithTeams.teamBId as any : matchWithTeams.teamAId as any;
           }
 
-          await this.liveMatchStatusModel.findOneAndUpdate(
-            { matchId: matchObjectId },
+          // Update Inning 1 with the correct teams
+          await this.inningModel.findOneAndUpdate(
+            { matchId: matchObjectId, inningNumber: 1 },
             {
               battingTeamId,
               bowlingTeamId,
-              lastUpdated: new Date(),
             },
             { upsert: true, session }
           );
         }
 
-        const populatedMatchDetails = await this.matchDetailsModel.populate(matchDetails, {
+        const populatedMatch = await this.matchModel.populate(match, {
           path: 'toss.winnerId',
           select: 'name shortName code logo'
         });
 
         return this.responseService.successWithSingle(
-          populatedMatchDetails,
+          populatedMatch,
           'Toss information updated successfully',
           'TOSS_UPDATED',
           'Toss information updated successfully',
@@ -1284,7 +1353,8 @@ export class LiveMatchService {
           .populate('bowlingTeamId', 'name shortName code logo')
           .lean();
 
-        // Also update LiveMatchStatus if this is the current inning
+        // Also update LiveMatchStatus if this is the current inning (REMOVED: LiveMatchStatus deprecated)
+        /*
         const liveStatus = await this.liveMatchStatusModel.findOne({ matchId: matchObjectId }).session(s);
         if (liveStatus && liveStatus.currentInning === inningNumber) {
           await this.liveMatchStatusModel.findOneAndUpdate(
@@ -1296,6 +1366,7 @@ export class LiveMatchService {
             { session: s }
           );
         }
+        */
 
         return this.responseService.successWithSingle(
           inning,
@@ -1539,33 +1610,6 @@ export class LiveMatchService {
         // Get or create inning
         let inning = await this.inningModel.findOne({ matchId: matchObjectId, inningNumber }).session(session);
 
-        // Sync inning teams with live status if mismatched (fixes stale data issues)
-        if (inning) {
-          const liveStatus = await this.liveMatchStatusModel.findOne({ matchId: matchObjectId }).session(session).lean();
-          if (liveStatus && liveStatus.battingTeamId && liveStatus.bowlingTeamId) {
-            const battingTeam = liveStatus.battingTeamId as any;
-            const lsBattingId = battingTeam._id ? battingTeam._id.toString() : battingTeam.toString();
-
-            const bowlingTeam = liveStatus.bowlingTeamId as any;
-            const lsBowlingId = bowlingTeam._id ? bowlingTeam._id.toString() : bowlingTeam.toString();
-
-            const inningBattingId = inning.battingTeamId?.toString();
-            const inningBowlingId = inning.bowlingTeamId?.toString();
-
-            if (lsBattingId !== inningBattingId || lsBowlingId !== inningBowlingId) {
-              // Update inning to match live status
-              inning = await this.inningModel.findOneAndUpdate(
-                { _id: inning._id },
-                {
-                  battingTeamId: new Types.ObjectId(lsBattingId),
-                  bowlingTeamId: new Types.ObjectId(lsBowlingId)
-                },
-                { new: true, session }
-              );
-            }
-          }
-        }
-
         if (!inning) {
           // Get match to find teams
           const match = await this.matchModel.findById(matchObjectId).session(session).lean();
@@ -1580,40 +1624,21 @@ export class LiveMatchService {
             );
           }
 
-          // Try to get batting/bowling teams from live status first
-          const liveStatus = await this.liveMatchStatusModel.findOne({ matchId: matchObjectId }).session(session).lean();
-          let battingTeamId: Types.ObjectId | null = null;
-          let bowlingTeamId: Types.ObjectId | null = null;
+          // Use teams from Match entity as default if not specified
+          // In a real scenario, these should have been set by updateToss or previous innings
+          // But for initialization, we can fall back to Match teams if Inning doesn't exist yet.
+          // Ideally, Inning 1 is created at match start.
 
-          if (liveStatus?.battingTeamId && liveStatus?.bowlingTeamId) {
-            battingTeamId = typeof liveStatus.battingTeamId === 'object'
-              ? liveStatus.battingTeamId._id
-              : new Types.ObjectId(liveStatus.battingTeamId);
-            bowlingTeamId = typeof liveStatus.bowlingTeamId === 'object'
-              ? liveStatus.bowlingTeamId._id
-              : new Types.ObjectId(liveStatus.bowlingTeamId);
-          } else {
-            // Don't auto-assign teams - require them to be set in live status first
-            return this.responseService.error(
-              'Batting and bowling teams not set',
-              'TEAMS_NOT_SET',
-              'Please set batting and bowling teams in live status before initializing scorecards. Teams should be set based on toss result or match situation.',
-              undefined,
-              null,
-              HttpStatus.BAD_REQUEST,
-            );
-          }
+          let battingTeamId = match.teamAId as any;
+          let bowlingTeamId = match.teamBId as any;
 
-          // Validate that teams are properly set
-          if (!battingTeamId || !bowlingTeamId) {
-            return this.responseService.error(
-              'Invalid team configuration',
-              'INVALID_TEAMS',
-              'Batting and bowling teams must be set before initializing scorecards',
-              undefined,
-              null,
-              HttpStatus.BAD_REQUEST,
-            );
+          // Check if we can infer from previous inning
+          if (inningNumber > 1) {
+            const prevInning = await this.inningModel.findOne({ matchId: matchObjectId, inningNumber: inningNumber - 1 }).session(session);
+            if (prevInning) {
+              battingTeamId = prevInning.bowlingTeamId;
+              bowlingTeamId = prevInning.battingTeamId;
+            }
           }
 
           const [newInning] = await this.inningModel.create([{
@@ -1980,9 +2005,9 @@ export class LiveMatchService {
    * This ensures both systems are always in sync
    */
   private async syncStrikerNonStriker(matchId: Types.ObjectId, inningId: Types.ObjectId, strikerId: Types.ObjectId | null, nonStrikerId: Types.ObjectId | null): Promise<void> {
-    // Update LiveMatchStatus
-    await this.liveMatchStatusModel.findOneAndUpdate(
-      { matchId },
+    // Update Inning
+    await this.inningModel.findByIdAndUpdate(
+      inningId,
       {
         $set: {
           currentStrikerId: strikerId,
@@ -2029,6 +2054,35 @@ export class LiveMatchService {
       }
 
       const playerObjectId = new Types.ObjectId(playerId);
+
+      // Super Over Validation: Batter cannot bat if they were dismissed in a previous Super Over match inning
+      if (inning.type === 'super_over') {
+        const previousSoInnings = await this.inningModel.find({
+          matchId: matchObjectId,
+          type: 'super_over',
+          battingTeamId: inning.battingTeamId,
+          inningNumber: { $lt: inning.inningNumber }
+        });
+
+        for (const prevInning of previousSoInnings) {
+          const pastStats = await this.battingScorecardModel.findOne({
+            matchId: matchObjectId,
+            inningId: prevInning._id,
+            playerId: playerObjectId
+          });
+
+          if (pastStats && pastStats.isOut) {
+            return this.responseService.error(
+              'Batsman ineligible',
+              'BATSMAN_INELIGIBLE',
+              'This player was dismissed in a previous Super Over and is not eligible to bat again.',
+              undefined,
+              null,
+              HttpStatus.BAD_REQUEST,
+            );
+          }
+        }
+      }
 
       // Check if batsman exists and is not out
       const batsman = await this.battingScorecardModel.findOne({
@@ -2109,6 +2163,35 @@ export class LiveMatchService {
 
       const playerObjectId = new Types.ObjectId(playerId);
 
+      // Super Over Validation: Batter cannot bat if they were dismissed in a previous Super Over match inning
+      if (inning.type === 'super_over') {
+        const previousSoInnings = await this.inningModel.find({
+          matchId: matchObjectId,
+          type: 'super_over',
+          battingTeamId: inning.battingTeamId,
+          inningNumber: { $lt: inning.inningNumber }
+        });
+
+        for (const prevInning of previousSoInnings) {
+          const pastStats = await this.battingScorecardModel.findOne({
+            matchId: matchObjectId,
+            inningId: prevInning._id,
+            playerId: playerObjectId
+          });
+
+          if (pastStats && pastStats.isOut) {
+            return this.responseService.error(
+              'Batsman ineligible',
+              'BATSMAN_INELIGIBLE',
+              'This player was dismissed in a previous Super Over and is not eligible to bat again.',
+              undefined,
+              null,
+              HttpStatus.BAD_REQUEST,
+            );
+          }
+        }
+      }
+
       // Check if batsman exists and is not out
       const batsman = await this.battingScorecardModel.findOne({
         matchId: matchObjectId,
@@ -2185,27 +2268,27 @@ export class LiveMatchService {
         );
       }
 
-      // Find current striker and non-striker - use LiveMatchStatus IDs first for accuracy
-      const liveStatus = await this.liveMatchStatusModel.findOne({ matchId: matchObjectId }).exec();
+      // Find current striker and non-striker - use Inning IDs first for accuracy
+      // const liveStatus = await this.liveMatchStatusModel.findOne({ matchId: matchObjectId }).exec(); // REMOVED
 
       let striker = null;
       let nonStriker = null;
 
-      // Try using IDs from LiveMatchStatus first (most reliable)
-      if (liveStatus?.currentStrikerId) {
+      // Try using IDs from Inning first (most reliable)
+      if (inning?.currentStrikerId) {
         striker = await this.battingScorecardModel.findOne({
           matchId: matchObjectId,
           inningId: inning._id,
-          playerId: liveStatus.currentStrikerId,
+          playerId: inning.currentStrikerId,
           isOut: false,
         }).exec();
       }
 
-      if (liveStatus?.currentNonStrikerId) {
+      if (inning?.currentNonStrikerId) {
         nonStriker = await this.battingScorecardModel.findOne({
           matchId: matchObjectId,
           inningId: inning._id,
-          playerId: liveStatus.currentNonStrikerId,
+          playerId: inning.currentNonStrikerId,
           isOut: false,
         }).exec();
       }
@@ -2309,6 +2392,39 @@ export class LiveMatchService {
 
       const playerObjectId = new Types.ObjectId(playerId);
 
+      // Super Over Validation: Bowler cannot bowl if they bowled in a previous Super Over match inning
+      if (inning.type === 'super_over') {
+        const previousSoInnings = await this.inningModel.find({
+          matchId: matchObjectId,
+          type: 'super_over',
+          bowlingTeamId: inning.bowlingTeamId,
+          inningNumber: { $lt: inning.inningNumber }
+        });
+
+        // Note: This method doesn't take a session argument in signature, but calling model.find without session is fine if not inside transaction.
+        // If this method is called inside a transaction (it is not wrapped in runInTransaction here), we might need consistency.
+        // But for reading past innings, standard find is okay.
+
+        for (const prevInning of previousSoInnings) {
+          const pastStats = await this.bowlingScorecardModel.findOne({
+            matchId: matchObjectId,
+            inningId: prevInning._id,
+            playerId: playerObjectId
+          });
+
+          if (pastStats && (pastStats.balls > 0 || pastStats.overs > 0)) {
+            return this.responseService.error(
+              'Bowler ineligible',
+              'BOWLER_INELIGIBLE',
+              'This player bowled in a previous Super Over and is not eligible to bowl again.',
+              undefined,
+              null,
+              HttpStatus.BAD_REQUEST,
+            );
+          }
+        }
+      }
+
       // Set all bowlers in this inning to not current first
       await this.bowlingScorecardModel.updateMany(
         { matchId: matchObjectId, inningId: inning._id },
@@ -2333,15 +2449,15 @@ export class LiveMatchService {
         );
       }
 
-      // Update LiveMatchStatus with currentBowlerId
-      const liveStatus = await this.liveMatchStatusModel.findOneAndUpdate(
-        { matchId: matchObjectId },
+      // Update Inning with currentBowlerId
+      await this.inningModel.findByIdAndUpdate(
+        inning._id,
         { $set: { currentBowlerId: playerObjectId } },
-        { new: true },
+        { session: null } // Explicitly null if not in transaction
       ).exec();
 
       return this.responseService.successWithSingle(
-        { bowler, liveStatus },
+        { bowler },
         'Current bowler set successfully',
         'CURRENT_BOWLER_SET',
         'Current bowler set successfully',
@@ -2563,6 +2679,114 @@ export class LiveMatchService {
     }
   }
 
+
+
+
+  // Start Super Over
+  async startSuperOver(matchId: string): Promise<IResponseWithStatusCode<any>> {
+    try {
+      if (!Types.ObjectId.isValid(matchId)) {
+        return this.responseService.error(
+          'Invalid match ID',
+          'INVALID_MATCH_ID',
+          'Match ID must be a valid MongoDB ObjectId',
+          undefined,
+          null,
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+
+      return await this.runInTransaction(async (session) => {
+        const matchObjectId = new Types.ObjectId(matchId);
+
+        const match = await this.matchModel.findById(matchObjectId).session(session);
+        if (!match) {
+          throw new Error('Match not found');
+        }
+
+        // Increment Super Over count
+        const superOverCount = (match.superOverCount || 0) + 1;
+
+        // Determine next inning number (usually current + 1)
+        const lastInning = await this.inningModel.findOne({ matchId: matchObjectId }).sort({ inningNumber: -1 }).session(session);
+        const nextInningNumber = (lastInning?.inningNumber || 2) + 1;
+
+        // Determine teams for Super Over
+        // Logic: For Super Over 1, team batting second in the main match bats first
+        // If we don't have that info easily, we can default to swapping the last inning's teams
+
+        let battingTeamId = lastInning?.bowlingTeamId || match.teamBId; // Default to Team B
+        let bowlingTeamId = lastInning?.battingTeamId || match.teamAId; // Default to Team A
+
+        // Create Inning 1 of Super Over
+        const soInning1 = new this.inningModel({
+          matchId: matchObjectId,
+          inningNumber: nextInningNumber,
+          type: 'super_over',
+          superOverNumber: superOverCount,
+          battingTeamId,
+          bowlingTeamId,
+          totalRuns: 0,
+          totalWickets: 0,
+          totalBalls: 0,
+          totalOvers: 0,
+          status: 'ongoing',
+        });
+        await soInning1.save({ session });
+
+        // Create Inning 2 of Super Over
+        const soInning2 = new this.inningModel({
+          matchId: matchObjectId,
+          inningNumber: nextInningNumber + 1,
+          type: 'super_over',
+          superOverNumber: superOverCount,
+          battingTeamId: bowlingTeamId, // Swap
+          bowlingTeamId: battingTeamId,
+          totalRuns: 0,
+          totalWickets: 0,
+          totalBalls: 0,
+          totalOvers: 0,
+          status: 'pending',
+        });
+        await soInning2.save({ session });
+
+        // Update Match to point to new current Inning
+        await this.matchModel.findByIdAndUpdate(
+          matchObjectId,
+          {
+            superOverCount,
+            currentInning: nextInningNumber,
+            status: 'live', // Ensure match is live
+          },
+          { session }
+        );
+
+        return this.responseService.successWithSingle(
+          {
+            superOverCount,
+            currentInning: nextInningNumber,
+            battingTeamId,
+            bowlingTeamId
+          },
+          'Super Over started successfully',
+          'SUPER_OVER_STARTED',
+          'Super Over started successfully',
+          undefined,
+          HttpStatus.OK,
+        );
+      });
+    } catch (error) {
+      this.logger.error(`startSuperOver error:`, error);
+      return this.responseService.error(
+        'Failed to start Super Over',
+        'SUPER_OVER_START_FAILED',
+        error.message,
+        undefined,
+        null,
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
 
 }
 

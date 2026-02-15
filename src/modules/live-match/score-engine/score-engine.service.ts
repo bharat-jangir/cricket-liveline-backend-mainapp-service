@@ -4,7 +4,6 @@ import { Model, Types, isValidObjectId } from 'mongoose';
 import { BallEvent } from './interfaces/ball-event.interface';
 import { MatchState } from './interfaces/match-state.interface';
 import { ScoreHistory, ScoreHistoryDocument } from '../../../entities/score-history.entity';
-import { LiveMatchStatus, LiveMatchStatusDocument } from '../../../entities/live-match-status.entity';
 import { Match, MatchDocument } from '../../../entities/match.entity';
 import { Inning, InningDocument } from '../../../entities/inning.entity';
 import { BattingScorecard, BattingScorecardDocument } from '../../../entities/batting-scorecard.entity';
@@ -20,7 +19,6 @@ export class ScoreEngineService {
 
     constructor(
         @InjectModel(ScoreHistory.name) private scoreHistoryModel: Model<ScoreHistoryDocument>,
-        @InjectModel(LiveMatchStatus.name) private liveStatusModel: Model<LiveMatchStatusDocument>,
         @InjectModel(Match.name) private matchModel: Model<MatchDocument>,
         @InjectModel(Inning.name) private inningModel: Model<InningDocument>,
         @InjectModel(BattingScorecard.name) private battingModel: Model<BattingScorecardDocument>,
@@ -52,7 +50,7 @@ export class ScoreEngineService {
 
                 // Return special response indicating wicket selection is needed
                 return {
-                    ...newState.liveStatus.toObject(),
+                    ...newState.inning.toObject(),
                     requiresWicketSelection: true,
                     wicketContext: {
                         eventType: event.type,
@@ -94,7 +92,7 @@ export class ScoreEngineService {
 
             await this.persistState(newState, event);
             await this.publishMatchUpdate(matchId, newState, event);
-            return newState.liveStatus;
+            return newState.inning;
 
         } catch (error) {
             this.logger.error(`ScoreEngine Error: ${error.message}`);
@@ -114,25 +112,21 @@ export class ScoreEngineService {
         const match = await this.matchModel.findById(matchId).exec();
         if (!match) throw new NotFoundException('Match not found');
 
-        const liveStatus = await this.liveStatusModel.findOne({ matchId }).exec();
-        if (!liveStatus) throw new NotFoundException('Match Live Status not found');
-
         const inning = await this.inningModel.findOne({
             matchId,
-            inningNumber: liveStatus.currentInning
+            inningNumber: match.currentInning
         }).exec();
         if (!inning) throw new NotFoundException('Active Inning not found');
 
-        // Get current players from BattingScorecard and BowlingScorecard using LiveMatchStatus IDs
+        // Get current players from BattingScorecard and BowlingScorecard using Inning IDs
         const [striker, nonStriker, bowler] = await Promise.all([
-            liveStatus.currentStrikerId ? this.battingModel.findOne({ matchId, inningId: inning._id, playerId: liveStatus.currentStrikerId }).populate('playerId', 'name').exec() : null,
-            liveStatus.currentNonStrikerId ? this.battingModel.findOne({ matchId, inningId: inning._id, playerId: liveStatus.currentNonStrikerId }).populate('playerId', 'name').exec() : null,
-            liveStatus.currentBowlerId ? this.bowlingModel.findOne({ matchId, inningId: inning._id, playerId: liveStatus.currentBowlerId }).populate('playerId', 'name').exec() : null
+            inning.currentStrikerId ? this.battingModel.findOne({ matchId, inningId: inning._id, playerId: inning.currentStrikerId }).populate('playerId', 'name').exec() : null,
+            inning.currentNonStrikerId ? this.battingModel.findOne({ matchId, inningId: inning._id, playerId: inning.currentNonStrikerId }).populate('playerId', 'name').exec() : null,
+            inning.currentBowlerId ? this.bowlingModel.findOne({ matchId, inningId: inning._id, playerId: inning.currentBowlerId }).populate('playerId', 'name').exec() : null
         ]);
 
         return {
             match,
-            liveStatus,
             inning,
             striker: striker as any,
             nonStriker: nonStriker as any,
@@ -188,12 +182,12 @@ export class ScoreEngineService {
                 striker.balls += 1;
                 striker.strikeRate = striker.balls > 0 ? (striker.runs / striker.balls) * 100 : 0;
             }
-        } else if (!striker && state.liveStatus.currentStrikerId && !isWide && !isPenalty) {
+        } else if (!striker && state.inning.currentStrikerId && !isWide && !isPenalty) {
             // Create striker if doesn't exist
             const newStriker = await this.battingModel.create({
                 matchId: inning.matchId,
                 inningId: inning._id,
-                playerId: state.liveStatus.currentStrikerId,
+                playerId: state.inning.currentStrikerId,
                 battingPosition: 1,
                 runs: !isBye && !isLegBye ? runsScored : 0,
                 balls: isLegalBall || isNoBall ? 1 : 0,
@@ -231,13 +225,13 @@ export class ScoreEngineService {
                 bowler.average = 0;
                 bowler.strikeRate = 0;
             }
-        } else if (!bowler && state.liveStatus.currentBowlerId) {
+        } else if (!bowler && state.inning.currentBowlerId) {
             // Create bowler if doesn't exist
             const bowlerRunsInBall = !isBye && !isLegBye && !isPenalty ? (runsScored + extras) : 0;
             const newBowler = await this.bowlingModel.create({
                 matchId: inning.matchId,
                 inningId: inning._id,
-                playerId: state.liveStatus.currentBowlerId,
+                playerId: state.inning.currentBowlerId,
                 bowlingOrder: 1,
                 balls: isLegalBall ? 1 : 0,
                 runs: bowlerRunsInBall,
@@ -268,6 +262,14 @@ export class ScoreEngineService {
         const isLegalBall = !isWide && !isNoBall;
 
         if (striker) {
+            // Check for All Out condition before processing another wicket
+            const isSuperOver = inning.type === 'super_over';
+            const maxWickets = isSuperOver ? 2 : 10;
+
+            if (inning.totalWickets >= maxWickets) {
+                throw new BadRequestException(`Inning is already All Out (${inning.totalWickets} wickets). Cannot process another wicket.`);
+            }
+
             // Only count balls for legal deliveries and no-balls (not wides)
             // Skip ball increment if this is a composite event (already counted in previous trigger event)
             if (!isComposite && (isLegalBall || isNoBall)) {
@@ -358,11 +360,9 @@ export class ScoreEngineService {
             state.striker.isOnStrike = true;
             state.nonStriker.isOnStrike = false;
 
-            // Update LiveMatchStatus IDs
-            if (state.liveStatus) {
-                state.liveStatus.currentStrikerId = state.striker.playerId;
-                state.liveStatus.currentNonStrikerId = state.nonStriker.playerId;
-            }
+            // Update Inning IDs
+            state.inning.currentStrikerId = state.striker.playerId;
+            state.inning.currentNonStrikerId = state.nonStriker.playerId;
         }
     }
 
@@ -502,10 +502,10 @@ export class ScoreEngineService {
             currentState.bowler = await this.bowlingModel.findById(snapshot.bowler._id);
         }
 
-        // Restore liveStatus flags from the snapshot to ensure UI consistency (e.g. requiresWicketSelection)
-        if (snapshot.liveStatus) {
-            currentState.liveStatus.requiresWicketSelection = snapshot.liveStatus.requiresWicketSelection;
-            currentState.liveStatus.wicketContext = snapshot.liveStatus.wicketContext;
+        // Restore inning fields from the snapshot to ensure UI consistency (e.g. requiresWicketSelection)
+        if (snapshot.inning) {
+            currentState.inning.requiresWicketSelection = snapshot.inning.requiresWicketSelection;
+            currentState.inning.wicketContext = snapshot.inning.wicketContext;
         }
 
         // Validate undo is possible
@@ -529,7 +529,7 @@ export class ScoreEngineService {
             return await this.processUndo(matchId, event);
         }
 
-        return currentState.liveStatus;
+        return currentState.inning;
     }
 
     private validateUndoOperation(state: MatchState, event: BallEvent): void {
@@ -786,46 +786,35 @@ export class ScoreEngineService {
     }
 
     private async persistState(state: MatchState, event?: BallEvent) {
-        const { liveStatus, inning } = state;
+        const { inning } = state;
 
         // Update over summary for each ball immediately
         if (state.currentOverBalls.length > 0 && event && !['UNDO', 'OVER_END'].includes(event.type)) {
             await this.updateOverSummary(state, event);
         }
 
-        // Update LiveMatchStatus
-        if (liveStatus) {
-            const ballsPerOver = state.match.ballsPerOver || 6;
-            const currentOver = Math.floor(inning.totalBalls / ballsPerOver);
-            const currentBall = inning.totalBalls % ballsPerOver;
+        // Update Inning Live State
+        const ballsPerOver = state.match.ballsPerOver || 6;
+        const currentOver = Math.floor(inning.totalBalls / ballsPerOver);
+        const currentBall = inning.totalBalls % ballsPerOver;
 
-            liveStatus.overs = `${currentOver}.${currentBall}`;
-            liveStatus.score = `${inning.totalRuns}/${inning.totalWickets}`;
-            liveStatus.balls = inning.totalBalls;
-            liveStatus.currentOver = currentOver;
+        // Update basic progress
+        inning.currentOver = currentOver; // This is a number in schema
 
-            // Sync match parameters to live status for frontend consumption
-            liveStatus.ballsPerOver = ballsPerOver;
-            liveStatus.oversPerInning = state.match.oversPerInning || 20;
+        // Update string representation if needed, though schema has currentOver as number
+        // and currentBall as string.
 
-            // Sync current player IDs from state documents
-            if (state.striker) liveStatus.currentStrikerId = state.striker.playerId;
-            if (state.nonStriker) liveStatus.currentNonStrikerId = state.nonStriker.playerId;
-            if (state.bowler) liveStatus.currentBowlerId = state.bowler.playerId;
-
-            // Always set currentBall to the original event string that was sent
-            // For UNDO events, set it to 'confirming check' as requested
-            if (event) {
-                const eventVal = (event as any).originalEvent || event.type;
-                liveStatus.currentBall = eventVal === 'UNDO' ? 'confirming' : eventVal;
-            }
-
-            if (inning.lastWicket) {
-                liveStatus.lastWicket = inning.lastWicket;
-            }
-
-            await liveStatus.save();
+        // Always set currentBall to the original event string that was sent
+        // For UNDO events, set it to 'confirming check' as requested
+        if (event) {
+            const eventVal = (event as any).originalEvent || event.type;
+            inning.currentBall = eventVal === 'UNDO' ? 'confirming' : eventVal;
         }
+
+        // Sync current player IDs from state documents explicitly if not already set
+        if (state.striker) inning.currentStrikerId = state.striker.playerId;
+        if (state.nonStriker) inning.currentNonStrikerId = state.nonStriker.playerId;
+        if (state.bowler) inning.currentBowlerId = state.bowler.playerId;
 
         // Save inning
         await inning.save();
@@ -959,22 +948,22 @@ export class ScoreEngineService {
             ballObj.batsmanName = batsmanName;
         }
 
-        // Capture live status at ball time
-        if (state.liveStatus) {
+        // Capture live status at ball time (from Match entity now)
+        if (state.match) {
             ballObj.odds = {
-                team1Odds: state.liveStatus.oddsBlue,
-                team2Odds: state.liveStatus.oddsRed,
+                team1Odds: state.match.oddsBlue || 0,
+                team2Odds: state.match.oddsRed || 0,
             };
             ballObj.session = {
-                sessionName: state.liveStatus.oddsTeam || 'Session',
-                sessionValue: state.liveStatus.session,
-                sessionBlue: state.liveStatus.sessionBlue,
-                sessionRed: state.liveStatus.sessionRed,
+                sessionName: state.match.oddsTeam || 'Session',
+                sessionValue: state.match.session || 0,
+                sessionBlue: state.match.sessionBlue || 0,
+                sessionRed: state.match.sessionRed || 0,
             };
             ballObj.lambi = {
-                lambiValue: state.liveStatus.lambi,
-                lambiBlue: state.liveStatus.lambiBlue,
-                lambiRed: state.liveStatus.lambiRed,
+                lambiValue: state.match.lambi || 0,
+                lambiBlue: state.match.lambiBlue || 0,
+                lambiRed: state.match.lambiRed || 0,
             };
         }
 

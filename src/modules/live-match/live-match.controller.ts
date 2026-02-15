@@ -75,6 +75,17 @@ export class LiveMatchController {
     }
   }
 
+  @MessagePattern('live-match.switchTeams')
+  async switchTeams(@Payload() payload: { matchId: string; switchDto: SwitchTeamDto }) {
+    try {
+      const result = await this.liveMatchService.switchTeams(payload.matchId, payload.switchDto);
+      return result;
+    } catch (error: any) {
+      this.logger.error('Error in switchTeams', error.stack || error.message || error);
+      throw error;
+    }
+  }
+
   @MessagePattern('live-match.getSquads')
   async getMatchSquads(@Payload() matchId: string) {
     try {
@@ -582,6 +593,17 @@ export class LiveMatchController {
       return result;
     } catch (error: any) {
       this.logger.error('Error in deleteCommentary', error.stack || error.message || error);
+      throw error;
+    }
+  }
+
+  @MessagePattern('live-match.startSuperOver')
+  async startSuperOver(@Payload() matchId: string) {
+    try {
+      const result = await this.liveMatchService.startSuperOver(matchId);
+      return result;
+    } catch (error: any) {
+      this.logger.error('Error in startSuperOver', error.stack || error.message || error);
       throw error;
     }
   }

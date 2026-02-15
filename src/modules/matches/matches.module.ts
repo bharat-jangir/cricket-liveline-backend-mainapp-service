@@ -4,7 +4,7 @@ import { MatchesService } from './matches.service';
 import { MatchesController } from './matches.controller';
 import { Match, MatchSchema } from '../../entities/match.entity';
 import { Team, TeamSchema } from '../../entities/team.entity';
-import { MatchDetails, MatchDetailsSchema } from '../../entities/match-details.entity';
+import { Venue, VenueSchema } from '../../entities/venue.entity';
 import { ResponseService } from '../../common/services/response.service';
 
 @Module({
@@ -12,7 +12,7 @@ import { ResponseService } from '../../common/services/response.service';
     MongooseModule.forFeature([
       { name: Match.name, schema: MatchSchema },
       { name: Team.name, schema: TeamSchema },
-      { name: MatchDetails.name, schema: MatchDetailsSchema },
+      { name: Venue.name, schema: VenueSchema },
     ]),
   ],
   controllers: [MatchesController],

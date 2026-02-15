@@ -6,13 +6,13 @@ export * from './venue.entity';
 export * from './tournament.entity';
 export * from './series.entity';
 export * from './match.entity';
-export * from './match-details.entity';
+
 export * from './match-squad.entity';
 export * from './inning.entity';
 export * from './batting-scorecard.entity';
 export * from './bowling-scorecard.entity';
 export * from './ball.entity';
-export * from './live-match-status.entity';
+// export * from './live-match-status.entity'; // Removed
 export * from './current-players.entity';
 export * from './over-summary.entity';
 export * from './partnership.entity';

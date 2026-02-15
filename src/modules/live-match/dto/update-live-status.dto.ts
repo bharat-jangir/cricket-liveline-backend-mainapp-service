@@ -109,7 +109,7 @@ export class UpdateLiveStatusDto {
   powerPlay?: boolean;
 
   @IsOptional()
-  isNew?: boolean;
+  isMatchNew?: boolean;
 
   @IsOptional()
   noScorecards?: boolean;
@@ -136,5 +136,33 @@ export class UpdateLiveStatusDto {
   @IsOptional()
   @IsString()
   comment3?: string;
+
+  @IsOptional()
+  @IsString()
+  matchStatus?: string;
+
+  @IsOptional()
+  @IsString()
+  matchState?: string;
+
+  @IsOptional()
+  @IsNumber()
+  ballsPerOver?: number;
+
+  @IsOptional()
+  @IsNumber()
+  oversPerInning?: number;
+
+  @IsOptional()
+  @IsMongoId()
+  currentStrikerId?: string;
+
+  @IsOptional()
+  @IsMongoId()
+  currentNonStrikerId?: string;
+
+  @IsOptional()
+  @IsMongoId()
+  currentBowlerId?: string;
 }
 

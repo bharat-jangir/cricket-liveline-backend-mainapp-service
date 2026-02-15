@@ -3,9 +3,9 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Match } from '../../entities/match.entity';
 import { Team } from '../../entities/team.entity';
-import { MatchDetails } from '../../entities/match-details.entity';
 import { CreateMatchDto } from './dto/create-match.dto';
 import { UpdateMatchDto } from './dto/update-match.dto';
+import { UpdateMatchDto as GatewayUpdateMatchDto } from './dto/update-match.dto';
 import { QueryMatchesDto } from './dto/query-matches.dto';
 import { ResponseService, IResponseWithStatusCode } from '../../common/services/response.service';
 
@@ -14,7 +14,6 @@ export class MatchesService {
   constructor(
     @InjectModel(Match.name) private matchModel: Model<Match>,
     @InjectModel(Team.name) private teamModel: Model<Team>,
-    @InjectModel(MatchDetails.name) private matchDetailsModel: Model<MatchDetails>,
     private readonly responseService: ResponseService,
   ) { }
 
@@ -34,18 +33,24 @@ export class MatchesService {
       }
 
       // Convert string IDs to ObjectIds before saving
-      const matchData = {
+      const matchData: any = {
         ...createMatchDto,
         teamAId: new Types.ObjectId(createMatchDto.teamAId),
         teamBId: new Types.ObjectId(createMatchDto.teamBId),
-        ...(createMatchDto.venueId && { venueId: new Types.ObjectId(createMatchDto.venueId) }), // Backwards compatibility if sent
+        ...(createMatchDto.venueId && { venueId: new Types.ObjectId(createMatchDto.venueId) }),
         ...(createMatchDto.seriesId && { seriesId: new Types.ObjectId(createMatchDto.seriesId) }),
         ...(createMatchDto.tournamentId && { tournamentId: new Types.ObjectId(createMatchDto.tournamentId) }),
-        ...(createMatchDto.straightUmpireId && { straightUmpireId: new Types.ObjectId(createMatchDto.straightUmpireId) }),
-        ...(createMatchDto.legUmpireId && { legUmpireId: new Types.ObjectId(createMatchDto.legUmpireId) }),
-        ...(createMatchDto.thirdUmpireId && { thirdUmpireId: new Types.ObjectId(createMatchDto.thirdUmpireId) }),
-        ...(createMatchDto.refereeId && { refereeId: new Types.ObjectId(createMatchDto.refereeId) }),
       };
+
+      // Map officials
+      if (createMatchDto.straightUmpireId || createMatchDto.legUmpireId || createMatchDto.thirdUmpireId || createMatchDto.refereeId) {
+        matchData.officials = {
+          ...(createMatchDto.straightUmpireId && { umpire1Id: new Types.ObjectId(createMatchDto.straightUmpireId) }),
+          ...(createMatchDto.legUmpireId && { umpire2Id: new Types.ObjectId(createMatchDto.legUmpireId) }),
+          ...(createMatchDto.thirdUmpireId && { thirdUmpireId: new Types.ObjectId(createMatchDto.thirdUmpireId) }),
+          ...(createMatchDto.refereeId && { refereeId: new Types.ObjectId(createMatchDto.refereeId) }),
+        };
+      }
 
       const match = new this.matchModel(matchData);
       await match.save();
@@ -197,23 +202,8 @@ export class MatchesService {
 
       const matches = matchesList as any[];
 
-      // Fetch match details for these matches to get venues
-      if (matches.length > 0) {
-        const matchIds = matches.map(m => m._id);
-        const details = await this.matchDetailsModel
-          .find({ matchId: { $in: matchIds } })
-          .populate('venueId', 'name city country')
-          .lean();
+      // No need to fetch match details separately anymore
 
-        const detailsMap = new Map(details.map(d => [d.matchId.toString(), d]));
-
-        matches.forEach(m => {
-          const d = detailsMap.get(m._id.toString());
-          if (d && d?.venueId) {
-            m.venue = d.venueId;
-          }
-        });
-      }
 
       return this.responseService.successWithPagination(
         matches,
@@ -243,19 +233,16 @@ export class MatchesService {
 
   async findOne(id: string): Promise<IResponseWithStatusCode<any>> {
     try {
-      // Get match and match details (for toss) concurrently
-      const [matchDoc, matchDetails] = await Promise.all([
-        this.matchModel
-          .findById(id)
-          .populate('teamAId', 'name shortName code logo')
-          .populate('teamBId', 'name shortName code logo'),
-        this.matchDetailsModel
-          .findOne({ matchId: new Types.ObjectId(id) })
-          .select('toss venueId')
-          .populate('toss.winnerId', 'name shortName code logo')
-          .populate('venueId', 'name city country')
-          .lean()
-      ]);
+      const matchDoc = await this.matchModel
+        .findById(id)
+        .populate('teamAId', 'name shortName code logo')
+        .populate('teamBId', 'name shortName code logo')
+        .populate('venueId', 'name city country')
+        .populate('officials.umpire1Id', 'name')
+        .populate('officials.umpire2Id', 'name')
+        .populate('officials.thirdUmpireId', 'name')
+        .populate('officials.refereeId', 'name')
+        .populate('toss.winnerId', 'name shortName code logo');
 
       if (!matchDoc) {
         return this.responseService.error(
@@ -268,14 +255,8 @@ export class MatchesService {
         );
       }
 
-      // Convert to plain object and ensure teams are populated
+      // Convert to plain object
       let match = (matchDoc.toObject ? matchDoc.toObject() : matchDoc) as any;
-
-      // Merge toss and venueId from matchDetails if they exist
-      if (matchDetails) {
-        if (matchDetails.toss) match.toss = matchDetails.toss;
-        if (matchDetails.venueId) match.venueId = matchDetails.venueId;
-      }
 
       // Always manually populate teams to ensure they're objects (fallback)
       // This handles cases where populate didn't work or teams are still ObjectIds
@@ -383,17 +364,22 @@ export class MatchesService {
       if (updateMatchDto.tournamentId) {
         updateData.tournamentId = new Types.ObjectId(updateMatchDto.tournamentId);
       }
-      if (updateMatchDto.straightUmpireId) {
-        updateData.straightUmpireId = new Types.ObjectId(updateMatchDto.straightUmpireId);
-      }
-      if (updateMatchDto.legUmpireId) {
-        updateData.legUmpireId = new Types.ObjectId(updateMatchDto.legUmpireId);
-      }
-      if (updateMatchDto.thirdUmpireId) {
-        updateData.thirdUmpireId = new Types.ObjectId(updateMatchDto.thirdUmpireId);
-      }
-      if (updateMatchDto.refereeId) {
-        updateData.refereeId = new Types.ObjectId(updateMatchDto.refereeId);
+
+      // Map officials for update
+      if (updateMatchDto.straightUmpireId || updateMatchDto.legUmpireId || updateMatchDto.thirdUmpireId || updateMatchDto.refereeId) {
+        // We need to be careful not to overwrite existing officials if only one is updated
+        // But $set works on dot notation. 
+        // For now, let's construct the update object using dot notation
+        if (updateMatchDto.straightUmpireId) updateData['officials.umpire1Id'] = new Types.ObjectId(updateMatchDto.straightUmpireId);
+        if (updateMatchDto.legUmpireId) updateData['officials.umpire2Id'] = new Types.ObjectId(updateMatchDto.legUmpireId);
+        if (updateMatchDto.thirdUmpireId) updateData['officials.thirdUmpireId'] = new Types.ObjectId(updateMatchDto.thirdUmpireId);
+        if (updateMatchDto.refereeId) updateData['officials.refereeId'] = new Types.ObjectId(updateMatchDto.refereeId);
+
+        // Remove old top-level fields from updateData to prevent errors if they are not in schema (which they aren't now)
+        delete updateData.straightUmpireId;
+        delete updateData.legUmpireId;
+        delete updateData.thirdUmpireId;
+        delete updateData.refereeId;
       }
 
       const match = await this.matchModel.findByIdAndUpdate(
