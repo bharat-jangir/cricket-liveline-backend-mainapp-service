@@ -88,13 +88,17 @@ export class LiveMatchService {
     }
 
     // Test matches can have 4 innings, ODI/T20 can only have 2
-    if (match.matchFormat !== 'test' && inningNumber > 2) {
+    // Exception: Super Overs (which might be inning 3/4 for T20/ODI)
+    // We check if the match result type implies a tie/super over scenario OR if totalInnings is > 2 (configured for super over)
+    const isSuperOver = match.result?.resultType === 'super_over' || match.result?.resultType === 'tie' || match.totalInnings > 2;
+
+    if (match.matchFormat !== 'test' && inningNumber > 2 && !isSuperOver) {
       return {
         valid: false,
         error: this.responseService.error(
           'Invalid inning number for match format',
           'INVALID_INNING_NUMBER',
-          `${match.matchFormat.toUpperCase()} matches can only have 2 innings. Innings 3 and 4 are only allowed for test matches.`,
+          `${match.matchFormat.toUpperCase()} matches can only have 2 innings. Innings 3 and 4 are only allowed for test matches or Super Overs.`,
           undefined,
           null,
           HttpStatus.BAD_REQUEST,
@@ -353,6 +357,40 @@ export class LiveMatchService {
           liveStatus.runRate = (currentInning.totalRuns / currentInning.totalBalls) * ballsPerOver;
         } else {
           liveStatus.runRate = 0;
+        }
+
+        // Calculate Equation for Chasing Team
+        if (match.currentInning > 1) {
+          let target = currentInning.target;
+
+          // If target not set on inning, try to calculate from previous inning (Limited Overs only)
+          if (!target && match.matchFormat !== 'test') {
+            const firstInning = await this.inningModel.findOne({
+              matchId: matchObjectId,
+              inningNumber: 1
+            }).lean();
+            if (firstInning) {
+              target = firstInning.totalRuns + 1;
+            }
+          }
+
+          if (target) {
+            const currentRuns = currentInning.totalRuns;
+            const runsNeeded = Math.max(0, target - currentRuns);
+
+            const ballsPerOver = match.ballsPerOver || 6;
+            // Use large number for tests if not defined
+            const maxOvers = match.oversPerInning || (match.matchFormat === 'test' ? 9999 : 20);
+            const maxBalls = maxOvers * ballsPerOver;
+            const ballsRem = Math.max(0, maxBalls - currentInning.totalBalls);
+
+            liveStatus.equation = {
+              target,
+              runsNeeded,
+              ballsRemaining: ballsRem,
+              requiredRunRate: ballsRem > 0 ? (runsNeeded / ballsRem) * ballsPerOver : 0
+            };
+          }
         }
       }
 
@@ -2682,6 +2720,156 @@ export class LiveMatchService {
 
 
 
+  // Evaluate Match Outcome
+  async evaluateMatchOutcome(matchId: string): Promise<IResponseWithStatusCode<any>> {
+    try {
+      if (!Types.ObjectId.isValid(matchId)) {
+        return this.responseService.error(
+          'Invalid match ID',
+          'INVALID_MATCH_ID',
+          'Match ID must be a valid MongoDB ObjectId',
+          undefined,
+          null,
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+
+      const matchObjectId = new Types.ObjectId(matchId);
+      const match = await this.matchModel.findById(matchObjectId);
+      if (!match) {
+        return this.responseService.error('Match not found', 'MATCH_NOT_FOUND', 'Match not found', undefined, null, HttpStatus.NOT_FOUND);
+      }
+
+      // Get all innings
+      const innings = await this.inningModel.find({ matchId: matchObjectId }).sort({ inningNumber: 1 });
+
+      // Basic validation: Need at least 2 completed innings for a result (except No Result)
+      if (innings.length < 2) {
+        return this.responseService.error('Insufficient innings', 'INSUFFICIENT_INNINGS', 'Match must have at least 2 innings to evaluate result', undefined, null, HttpStatus.BAD_REQUEST);
+      }
+
+      // Identify main innings (not super overs)
+      const mainInnings = innings.filter(i => i.type !== 'super_over');
+      const superOverInnings = innings.filter(i => i.type === 'super_over');
+
+      let resultType = 'normal';
+      let winBy = '';
+      let margin = 0;
+      let winnerId = null;
+      let resultText = '';
+      let losingTeamId = null;
+
+      // Logic for Normal Match (2 innings or Test 4)
+      if (mainInnings.length >= 2) {
+        const inn1 = mainInnings[0];
+        const inn2 = mainInnings[1];
+
+        // Simple run comparison for T20/ODI/Limited Overs
+        if (inn2.totalRuns > inn1.totalRuns) {
+          // Team Batting Second Won
+          winnerId = inn2.battingTeamId;
+          losingTeamId = inn2.bowlingTeamId;
+          resultType = 'normal';
+          winBy = 'wickets';
+          margin = 10 - inn2.totalWickets; // Assuming 10 wickets
+          resultText = `${(await this.getTeamName(winnerId))} won by ${margin} wickets`;
+        } else if (inn2.totalRuns < inn1.totalRuns) {
+          // Team Batting First Won
+          // Note: In real logic, we'd check if overs are done or all out. 
+          // We assume manual trigger implies match end.
+          winnerId = inn1.battingTeamId;
+          losingTeamId = inn1.bowlingTeamId;
+          resultType = 'normal';
+          winBy = 'runs';
+          margin = inn1.totalRuns - inn2.totalRuns;
+          resultText = `${(await this.getTeamName(winnerId))} won by ${margin} runs`;
+        } else {
+          // TIE
+          resultType = 'tie';
+          winBy = 'tie';
+          resultText = 'Match Tied';
+
+          // Format Specific Rules
+          if (['t20', 't20i', 'hundred', 't10'].includes(match.matchFormat)) {
+            // T20/Hundred Tie -> Super Over
+            resultText = 'Match Tied (Super Over Required)';
+            // We don't set winnerId yet
+
+            // If Super Overs exist, check them
+            if (superOverInnings.length > 0) {
+              // Super Overs come in pairs (Inn 3 & 4, or 5 & 6)
+              // If we have an even number of SO innings, we can evaluate the latest pair
+              if (superOverInnings.length % 2 === 0) {
+                const soInn1 = superOverInnings[superOverInnings.length - 2];
+                const soInn2 = superOverInnings[superOverInnings.length - 1];
+
+                if (soInn2.totalRuns > soInn1.totalRuns) {
+                  winnerId = soInn2.battingTeamId;
+                  losingTeamId = soInn2.bowlingTeamId;
+                  resultType = 'super_over';
+                  winBy = 'wickets';
+                  resultText = `${(await this.getTeamName(winnerId))} won by Super Over`;
+                } else if (soInn2.totalRuns < soInn1.totalRuns) {
+                  winnerId = soInn1.battingTeamId;
+                  losingTeamId = soInn1.bowlingTeamId;
+                  resultType = 'super_over';
+                  winBy = 'runs';
+                  resultText = `${(await this.getTeamName(winnerId))} won by Super Over`;
+                } else {
+                  // Super Over Tied -> Infinite Loop Clause
+                  resultText = 'Super Over Tied (Subsequent Super Over Required)';
+                  // No winner yet
+                }
+              }
+            }
+          } else {
+            // ODI / Test Tie -> Standard Tie
+            // (Unless ODI knockout, but assuming standard for now)
+          }
+        }
+      }
+
+      // Save Result
+      match.result = {
+        winnerId,
+        resultType,
+        winBy,
+        margin,
+        resultText,
+        winningTeamId: winnerId,
+        losingTeamId,
+      };
+
+      await match.save();
+
+      return this.responseService.successWithSingle(
+        match.result,
+        'Match outcome evaluated',
+        'MATCH_EVALUATED',
+        resultText,
+        undefined,
+        HttpStatus.OK,
+      );
+
+    } catch (error) {
+      this.logger.error(`evaluateMatchOutcome error:`, error);
+      return this.responseService.error(
+        'Failed to evaluate match',
+        'MATCH_EVALUATION_FAILED',
+        error.message,
+        undefined,
+        null,
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
+  private async getTeamName(teamId: Types.ObjectId): Promise<string> {
+    if (!teamId) return 'Team';
+    const team = await this.matchModel.db.collection('teams').findOne({ _id: teamId });
+    return team ? team.name : 'Team';
+  }
+
   // Start Super Over
   async startSuperOver(matchId: string): Promise<IResponseWithStatusCode<any>> {
     try {
@@ -2712,11 +2900,45 @@ export class LiveMatchService {
         const nextInningNumber = (lastInning?.inningNumber || 2) + 1;
 
         // Determine teams for Super Over
-        // Logic: For Super Over 1, team batting second in the main match bats first
-        // If we don't have that info easily, we can default to swapping the last inning's teams
+        // Rule: Team batting second in the main match bats first in Super Over 1
+        // Rule: In subsequent Super Overs, teams swap order from strictly previous Super over.
 
-        let battingTeamId = lastInning?.bowlingTeamId || match.teamBId; // Default to Team B
-        let bowlingTeamId = lastInning?.battingTeamId || match.teamAId; // Default to Team A
+        let battingTeamId: any;
+        let bowlingTeamId: any;
+
+        if (superOverCount === 1) {
+          // Find main match 2nd innings to see who batted
+          const mainInnings = await this.inningModel.find({ matchId: matchObjectId, type: { $ne: 'super_over' } }).sort({ inningNumber: 1 }).session(session);
+          if (mainInnings.length >= 2) {
+            const inn2 = mainInnings[1];
+            battingTeamId = inn2.battingTeamId; // Team B bats first in SO
+            bowlingTeamId = inn2.bowlingTeamId;
+          } else {
+            // Fallback
+            battingTeamId = match.teamBId;
+            bowlingTeamId = match.teamAId;
+          }
+        } else {
+          // Subsequent Super Over: Swap from previous Super Over
+          // Find last Super Over innings (pair)
+          const lastSoInnings = await this.inningModel.find({ matchId: matchObjectId, type: 'super_over' }).sort({ inningNumber: -1 }).limit(2).session(session);
+
+          // In previous SO, we look at who batted FIRST in that pair (the odd number in the pair).
+          // But simpler: just look at the last inning (SO Inn 2). 
+          // Whoever batted in SO Inn 2 (the chase) will BOWL in the next SO Inn 1.
+          // So whoever BOWLED in SO Inn 2 (defending) will BAT in the next SO Inn 1.
+
+          if (lastSoInnings.length > 0) {
+            const lastInning = lastSoInnings[0]; // This is the last created inning (SO Inn 2)
+            // In SO Inn 2: battingTeamId was chasing. bowlingTeamId was defending.
+            // Next SO (Inn 1): Defending team (bowlingTeamId of last inning) bats first.
+            battingTeamId = lastInning.bowlingTeamId;
+            bowlingTeamId = lastInning.battingTeamId;
+          } else {
+            battingTeamId = match.teamAId;
+            bowlingTeamId = match.teamBId;
+          }
+        }
 
         // Create Inning 1 of Super Over
         const soInning1 = new this.inningModel({
@@ -2750,16 +2972,23 @@ export class LiveMatchService {
         });
         await soInning2.save({ session });
 
-        // Update Match to point to new current Inning
-        await this.matchModel.findByIdAndUpdate(
+        // Update Match to point to new current Inning and update status
+        const updatedMatch = await this.matchModel.findByIdAndUpdate(
           matchObjectId,
           {
-            superOverCount,
-            currentInning: nextInningNumber,
-            status: 'live', // Ensure match is live
+            $set: {
+              superOverCount,
+              currentInning: nextInningNumber,
+              status: 'live', // Ensure match is live
+              'result.resultType': 'super_over', // Mark result as super over in progress
+              'result.resultText': `Super Over ${superOverCount} in progress`,
+            },
+            $inc: { totalInnings: 2 }
           },
-          { session }
+          { session, new: true }
         );
+
+        this.logger.log(`Super Over started. Match updated: Total Innings = ${updatedMatch.totalInnings}, Current Inning = ${updatedMatch.currentInning}`);
 
         return this.responseService.successWithSingle(
           {
@@ -2788,5 +3017,86 @@ export class LiveMatchService {
     }
   }
 
-}
+  // Check and conclude match if result is reached
+  async checkMatchConclusion(matchId: string): Promise<boolean> {
+    try {
+      const matchObjectId = new Types.ObjectId(matchId);
+      const match = await this.matchModel.findById(matchObjectId).lean();
+      if (!match || match.status === 'completed') return false;
 
+      // Only applicable for limited overs (ODI/T20) generally, but let's be generic
+      // We need to check if we are in the last inning (usually 2nd) and if a result is reached.
+      // For Test matches, it's more complex (4 innings), so we might restrict auto-conclusion to non-test for now
+      // OR handle 4th inning targets.
+
+      // Let's focus on 2nd inning chase (or 4th for Test)
+      // Generic check: If inning has a target, we can check conclusion
+      // if (match.currentInning !== 2 && match.matchFormat !== 'test') return false;
+      // For Super Over, inning might be 3/4, handled separately by startSuperOver usually, 
+      // but if we want to auto-conclude a super over chase:
+      // const isSuperOverChase = (match.currentInning % 2 === 0) && (match.result?.resultType === 'super_over' || match.matchFormat === 't20' || match.matchFormat === 'odi');
+
+      // Load innings
+      const innings = await this.inningModel.find({ matchId: matchObjectId }).sort({ inningNumber: 1 }).lean();
+
+      // Basic 2-inning chase logic
+      if (innings.length >= 2) {
+        const firstInning = innings[innings.length - 2]; // Previous inning (Target setter)
+        const secondInning = innings[innings.length - 1]; // Current inning (Chaser)
+        if ((secondInning as any).originalInningNumber !== undefined && (secondInning as any).originalInningNumber !== match.currentInning) {
+          // Mismatch or something, skip
+        }
+
+        // Determine Target: Use explicit target from inning if available, otherwise calculate from previous inning
+        // This supports Test matches (4th inning target) and D/L methods if target is set on Inning entity
+        let target = secondInning.target;
+        if (!target || target === 0) {
+          // Fallback for standard limited overs: Target = Inning 1 Runs + 1
+          if (match.matchFormat !== 'test') {
+            target = firstInning.totalRuns + 1;
+          } else {
+            // For Test matches without explicit target, we CANNOT auto-conclude currently.
+            return false;
+          }
+        }
+
+        const currentRuns = secondInning.totalRuns;
+        const wicketsDown = secondInning.totalWickets;
+        // const totalWickets = 10; // Standard, unless stated otherwise (e.g. 2 for Super Over)
+
+        // Check for Super Over limits
+        const isSuperOver = match.currentInning > 2 && (match.result?.resultType === 'super_over' || firstInning.type === 'super_over');
+        const maxWickets = isSuperOver ? 2 : 10;
+        const ballsPerOver = match.ballsPerOver || 6;
+        // For Test matches, overs are usually unlimited (or large), so maxOvers check should be skipped or high
+        const maxOvers = isSuperOver ? 1 : (match.oversPerInning || 9999);
+        const maxBalls = maxOvers * ballsPerOver;
+
+        // 1. Chasing team wins
+        if (target && currentRuns >= target) {
+          this.logger.log(`Match ${matchId} Auto-Conclusion: Chasing team won (Runs ${currentRuns} >= Target ${target})`);
+          await this.evaluateMatchOutcome(matchId);
+          return true;
+        }
+
+        // 2. Bowling team wins (All out or Overs finished) - AND score is less than target
+        if (wicketsDown >= maxWickets || secondInning.totalBalls >= maxBalls) {
+          if (currentRuns < target - 1) { // Lost
+            this.logger.log(`Match ${matchId} Auto-Conclusion: Bowling team won (Runs ${currentRuns} < Target ${target})`);
+            await this.evaluateMatchOutcome(matchId);
+            return true;
+          } else if (currentRuns === target - 1) { // Tie
+            this.logger.log(`Match ${matchId} Auto-Conclusion: Tie detected`);
+            await this.evaluateMatchOutcome(matchId);
+            return true;
+          }
+        }
+      }
+
+      return false;
+    } catch (error) {
+      this.logger.error(`Error in checkMatchConclusion: ${error.message}`);
+      return false;
+    }
+  }
+}

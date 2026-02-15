@@ -1,4 +1,4 @@
-import { Controller, Logger, Patch, Param, Body, Get } from '@nestjs/common';
+import { Controller, Logger, Patch, Param, Body, Get, Post } from '@nestjs/common';
 import { MessagePattern, Payload } from '@nestjs/microservices';
 import { LiveMatchService } from './live-match.service';
 import { UpdateLiveStatusDto } from './dto/update-live-status.dto';
@@ -309,6 +309,12 @@ export class LiveMatchController {
       console.log('handleEvent payload', payload);
       const ballEvent: any = { ...payload.event, matchId: payload.matchId };
       const result = await this.scoreEngineService.handleEvent(payload.matchId, ballEvent);
+
+      // Check for match conclusion
+      this.liveMatchService.checkMatchConclusion(payload.matchId).catch(err =>
+        this.logger.error(`Error checking match conclusion: ${err.message}`)
+      );
+
       // Return wrapped response for gateway
       return {
         status: true,
@@ -345,6 +351,11 @@ export class LiveMatchController {
         batsmanName: payload.batsmanName
       };
       const result = await this.scoreEngineService.handleEvent(payload.matchId, ballEvent);
+
+      // Check for match conclusion
+      this.liveMatchService.checkMatchConclusion(payload.matchId).catch(err =>
+        this.logger.error(`Error checking match conclusion: ${err.message}`)
+      );
 
       // Check if wicket selection is required
       if (result && result.requiresWicketSelection) {
@@ -597,10 +608,25 @@ export class LiveMatchController {
     }
   }
 
-  @MessagePattern('live-match.startSuperOver')
-  async startSuperOver(@Payload() matchId: string) {
+  @Post(':matchId/evaluate')
+  @MessagePattern('live-match.evaluateMatchOutcome')
+  async evaluateMatchOutcome(@Param('matchId') matchId: string, @Payload() payload: any) {
     try {
-      const result = await this.liveMatchService.startSuperOver(matchId);
+      const mid = matchId || payload;
+      const result = await this.liveMatchService.evaluateMatchOutcome(mid);
+      return result; // Controller returns direct result, ResponseInterceptor handles formatting if used, or Gateway wraps it.
+    } catch (error: any) {
+      this.logger.error('Error in evaluateMatchOutcome', error.stack || error.message || error);
+      throw error;
+    }
+  }
+
+  @Post(':matchId/super-over')
+  @MessagePattern('live-match.startSuperOver')
+  async startSuperOver(@Param('matchId') matchId: string, @Payload() payload: any) {
+    try {
+      const mid = matchId || payload;
+      const result = await this.liveMatchService.startSuperOver(mid);
       return result;
     } catch (error: any) {
       this.logger.error('Error in startSuperOver', error.stack || error.message || error);
