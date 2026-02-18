@@ -297,11 +297,18 @@ export class LiveMatchService {
         .populate('bowlingTeamId', 'name shortName code logo')
         .lean();
 
+      const innings = await this.inningModel.find({ matchId: matchObjectId })
+        .populate('battingTeamId', 'name shortName code logo')
+        .populate('bowlingTeamId', 'name shortName code logo')
+        .sort({ inningNumber: 1 })
+        .lean();
+
       // Construct return object mimicking old LiveMatchStatus structure
       const liveStatus: any = {
         matchId: match._id,
         currentInning: match.currentInning,
         toss: match?.toss,
+        innings: innings, // Include all innings
 
         // Match level status flags
         isMatchNew: match.isMatchNew,
@@ -365,10 +372,7 @@ export class LiveMatchService {
 
           // If target not set on inning, try to calculate from previous inning (Limited Overs only)
           if (!target && match.matchFormat !== 'test') {
-            const firstInning = await this.inningModel.findOne({
-              matchId: matchObjectId,
-              inningNumber: 1
-            }).lean();
+            const firstInning = innings.find(inn => inn.inningNumber === 1);
             if (firstInning) {
               target = firstInning.totalRuns + 1;
             }

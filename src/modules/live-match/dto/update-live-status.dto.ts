@@ -5,7 +5,7 @@ export class UpdateLiveStatusDto {
   @IsOptional()
   @IsNumber()
   @Min(1)
-  @Max(4)
+  @Max(10)
   currentInning?: number;
 
   @IsOptional()
