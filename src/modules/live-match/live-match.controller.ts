@@ -97,6 +97,17 @@ export class LiveMatchController {
     }
   }
 
+  @MessagePattern('live-match.getAllInnings')
+  async getAllInnings(@Payload() matchId: string) {
+    try {
+      const result = await this.liveMatchService.getAllInnings(matchId);
+      return result;
+    } catch (error: any) {
+      this.logger.error('Error in getAllInnings', error.stack || error.message || error);
+      throw error;
+    }
+  }
+
   @MessagePattern('live-match.getScorecard')
   async getScorecard(@Payload() payload: { matchId: string; inningNumber: number }) {
     try {

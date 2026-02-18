@@ -418,6 +418,56 @@ export class LiveMatchService {
     }
   }
 
+  // Get all innings for a match
+  async getAllInnings(matchId: string): Promise<any> {
+    try {
+      if (!Types.ObjectId.isValid(matchId)) {
+        return this.responseService.error(
+          'Invalid match ID',
+          'INVALID_MATCH_ID',
+          'Match ID must be a valid MongoDB ObjectId',
+          undefined,
+          null,
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+
+      const matchObjectId = new Types.ObjectId(matchId);
+      console.log(`[getAllInnings] Fetching innings for matchId: ${matchId} (ObjectId: ${matchObjectId})`);
+
+      const innings = await this.inningModel.find({ matchId: matchObjectId })
+        .populate('battingTeamId', 'name shortName code logo')
+        .populate('bowlingTeamId', 'name shortName code logo')
+        .sort({ inningNumber: 1 })
+        .lean();
+
+      console.log(`[getAllInnings] Found ${innings.length} innings for match ${matchId}`);
+      if (innings.length === 0) {
+        // Double check count without population just in case
+        const count = await this.inningModel.countDocuments({ matchId: matchObjectId });
+        console.log(`[getAllInnings] Raw count check: ${count}`);
+      }
+
+      return this.responseService.successWithSingle(
+        innings,
+        'Innings retrieved successfully',
+        'INNINGS_RETRIEVED',
+        'Innings retrieved successfully',
+        undefined,
+        HttpStatus.OK,
+      );
+    } catch (error) {
+      return this.responseService.error(
+        'Failed to fetch innings',
+        'INNINGS_FETCH_FAILED',
+        error.message,
+        undefined,
+        null,
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
   // Get recent overs for admin panel (last 3 overs)
   async getRecentOvers(matchId: string, inningNumber?: number): Promise<IResponseWithStatusCode<any>> {
     try {
