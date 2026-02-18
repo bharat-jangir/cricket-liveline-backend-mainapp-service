@@ -468,6 +468,67 @@ export class LiveMatchService {
     }
   }
 
+  // Get batch live scores for multiple matches
+  async getBatchLiveScores(matchIds: string[]): Promise<Record<string, any>> {
+    try {
+      const matchObjectIds = matchIds
+        .filter(id => Types.ObjectId.isValid(id))
+        .map(id => new Types.ObjectId(id));
+
+      if (matchObjectIds.length === 0) return {};
+
+      // Fetch all innings for these matches
+      const innings = await this.inningModel.find({ matchId: { $in: matchObjectIds } }).lean();
+
+      // Group innings by match ID
+      const scoresByMatch: Record<string, any> = {};
+
+      // Initialize with empty for all requested IDs in case some have no innings
+      matchIds.forEach(id => {
+        scoresByMatch[id] = null;
+      });
+
+      matchIds.forEach(matchId => {
+        // Filter innings for this match
+        const matchInnings = innings.filter(inn => String(inn.matchId) === String(matchId));
+
+        if (matchInnings.length > 0) {
+          // Sort innings
+          matchInnings.sort((a, b) => a.inningNumber - b.inningNumber);
+
+          const latestInning = matchInnings[matchInnings.length - 1];
+          const score = `${latestInning.totalRuns}/${latestInning.totalWickets}`;
+
+          // Simple overs calculation (assuming 6 balls per over if not available)
+          const currentOver = Math.floor(latestInning.totalBalls / 6);
+          const currentBall = latestInning.totalBalls % 6;
+          const overs = `${currentOver}.${currentBall}`;
+
+          scoresByMatch[matchId] = {
+            score,
+            overs,
+            innings: matchInnings.map(inn => ({
+              inningNumber: inn.inningNumber,
+              totalRuns: inn.totalRuns,
+              totalWickets: inn.totalWickets,
+              totalBalls: inn.totalBalls,
+              battingTeamId: inn.battingTeamId,
+              bowlingTeamId: inn.bowlingTeamId,
+              type: inn.type || 'normal',
+              superOverNumber: inn.superOverNumber,
+              isAllOut: inn.isAllOut
+            }))
+          };
+        }
+      });
+
+      return scoresByMatch;
+    } catch (error) {
+      this.logger.error(`Error fetching batch live scores: ${error.message}`);
+      return {};
+    }
+  }
+
   // Get recent overs for admin panel (last 3 overs)
   async getRecentOvers(matchId: string, inningNumber?: number): Promise<IResponseWithStatusCode<any>> {
     try {

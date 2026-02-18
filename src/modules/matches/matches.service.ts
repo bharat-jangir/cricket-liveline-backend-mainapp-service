@@ -8,6 +8,7 @@ import { UpdateMatchDto } from './dto/update-match.dto';
 import { UpdateMatchDto as GatewayUpdateMatchDto } from './dto/update-match.dto';
 import { QueryMatchesDto } from './dto/query-matches.dto';
 import { ResponseService, IResponseWithStatusCode } from '../../common/services/response.service';
+import { LiveMatchService } from '../live-match/live-match.service';
 
 @Injectable()
 export class MatchesService {
@@ -15,6 +16,7 @@ export class MatchesService {
     @InjectModel(Match.name) private matchModel: Model<Match>,
     @InjectModel(Team.name) private teamModel: Model<Team>,
     private readonly responseService: ResponseService,
+    private readonly liveMatchService: LiveMatchService,
   ) { }
 
   async create(createMatchDto: CreateMatchDto): Promise<IResponseWithStatusCode<any>> {
@@ -202,7 +204,26 @@ export class MatchesService {
 
       const matches = matchesList as any[];
 
-      // No need to fetch match details separately anymore
+      // Fetch live scores in batch
+      try {
+        const matchIds = matches.map(m => m._id.toString());
+        if (matchIds.length > 0) {
+          const liveScores = await this.liveMatchService.getBatchLiveScores(matchIds);
+
+          // Merge scores into match objects
+          matches.forEach(match => {
+            if (liveScores[match._id.toString()]) {
+              // In backend we can attach this to a new field 'liveScore' or similar
+              // Frontend expects this in 'liveScore' or we can add it to 'toss' or 'result' temporarily?
+              // Better to add a dedicated 'liveStatus' field that frontend can use
+              match.liveStatus = liveScores[match._id.toString()];
+            }
+          });
+        }
+      } catch (err) {
+        console.error('Error fetching batch live scores:', err);
+        // Continue without scores if failed
+      }
 
 
       return this.responseService.successWithPagination(

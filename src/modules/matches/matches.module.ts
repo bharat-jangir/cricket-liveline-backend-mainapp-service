@@ -6,6 +6,7 @@ import { Match, MatchSchema } from '../../entities/match.entity';
 import { Team, TeamSchema } from '../../entities/team.entity';
 import { Venue, VenueSchema } from '../../entities/venue.entity';
 import { ResponseService } from '../../common/services/response.service';
+import { LiveMatchModule } from '../live-match/live-match.module';
 
 @Module({
   imports: [
@@ -14,6 +15,7 @@ import { ResponseService } from '../../common/services/response.service';
       { name: Team.name, schema: TeamSchema },
       { name: Venue.name, schema: VenueSchema },
     ]),
+    LiveMatchModule, // Import LiveMatchModule to use LiveMatchService
   ],
   controllers: [MatchesController],
   providers: [MatchesService, ResponseService],
