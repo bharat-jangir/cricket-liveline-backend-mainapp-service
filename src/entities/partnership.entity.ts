@@ -29,7 +29,7 @@ export class Partnership {
   @Prop({
     type: Types.ObjectId,
     ref: 'Player',
-    required: true,
+    required: false,
   })
   batsman1Id: Types.ObjectId;
 
@@ -48,7 +48,7 @@ export class Partnership {
   @Prop({
     type: Types.ObjectId,
     ref: 'Player',
-    required: true,
+    required: false,
   })
   batsman2Id: Types.ObjectId;
 
@@ -78,6 +78,40 @@ export class Partnership {
 
   @Prop({ default: false })
   isActive: boolean;
+
+  // Frontend custom fields
+  @Prop()
+  batsman?: string;
+
+  @Prop()
+  nbKey?: string;
+
+  @Prop()
+  obKey?: string;
+
+  @Prop()
+  nbName?: string;
+
+  @Prop()
+  obName?: string;
+
+  @Prop()
+  nbRun?: string;
+
+  @Prop()
+  obRun?: string;
+
+  @Prop()
+  nbBall?: string;
+
+  @Prop()
+  obBall?: string;
+
+  @Prop()
+  score?: string;
+
+  @Prop()
+  wicket?: string;
 
   @Prop({ default: false })
   isBroken: boolean;

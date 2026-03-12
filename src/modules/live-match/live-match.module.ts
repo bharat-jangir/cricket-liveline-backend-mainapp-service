@@ -11,6 +11,7 @@ import { OverSummary, OverSummarySchema } from '../../entities/over-summary.enti
 import { LiveMatchSession, LiveMatchSessionSchema } from '../../entities/live-match-session.entity';
 import { Player, PlayerSchema } from '../../entities/player.entity';
 import { Venue, VenueSchema } from '../../entities/venue.entity';
+import { Partnership, PartnershipSchema } from '../../entities/partnership.entity';
 import { ResponseService } from '../../common/services/response.service';
 import { ScoreEngineModule } from './score-engine/score-engine.module';
 import { CommentaryGeneratorService } from './services/commentary-generator.service';
@@ -27,6 +28,7 @@ import { CommentaryGeneratorService } from './services/commentary-generator.serv
       { name: MatchSquad.name, schema: MatchSquadSchema },
       { name: OverSummary.name, schema: OverSummarySchema },
       { name: LiveMatchSession.name, schema: LiveMatchSessionSchema },
+      { name: Partnership.name, schema: PartnershipSchema },
       { name: Player.name, schema: PlayerSchema },
       { name: Venue.name, schema: VenueSchema },
     ]),

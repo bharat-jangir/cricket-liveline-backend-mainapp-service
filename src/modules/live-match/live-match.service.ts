@@ -17,6 +17,7 @@ import { UpdateTossDto } from './dto/update-toss.dto';
 import { CreateSessionDto } from './dto/create-session.dto';
 import { UpdateSessionDto } from './dto/update-session.dto';
 import { LiveMatchSession } from '../../entities/live-match-session.entity';
+import { Partnership } from '../../entities/partnership.entity';
 import { ResponseService, IResponseWithStatusCode } from '../../common/services/response.service';
 
 @Injectable()
@@ -31,6 +32,7 @@ export class LiveMatchService {
     @InjectModel(MatchSquad.name) private matchSquadModel: Model<MatchSquad>,
     @InjectModel(OverSummary.name) private overSummaryModel: Model<OverSummary>,
     @InjectModel(LiveMatchSession.name) private liveMatchSessionModel: Model<LiveMatchSession>,
+    @InjectModel(Partnership.name) private partnershipModel: Model<Partnership>,
     @InjectConnection() private readonly connection: Connection,
     private readonly responseService: ResponseService,
   ) { }
@@ -602,6 +604,107 @@ export class LiveMatchService {
         null,
         HttpStatus.INTERNAL_SERVER_ERROR,
       );
+    }
+  }
+
+  // Get partnerships
+  async getPartnerships(matchId: string, inningNumber?: number): Promise<IResponseWithStatusCode<any>> {
+    try {
+      if (!Types.ObjectId.isValid(matchId)) {
+        return this.responseService.error('Invalid match ID', 'INVALID_MATCH_ID', 'Match ID must be a valid MongoDB ObjectId', undefined, null, HttpStatus.BAD_REQUEST);
+      }
+
+      const matchObjectId = new Types.ObjectId(matchId);
+
+      let targetInning = inningNumber;
+      if (!targetInning) {
+        const match = await this.matchModel.findById(matchObjectId).select('currentInning').lean();
+        targetInning = match?.currentInning || 1;
+      }
+
+      const inning = await this.inningModel.findOne({
+        matchId: matchObjectId,
+        inningNumber: targetInning
+      }).lean();
+
+      if (!inning) {
+        return this.responseService.error('Inning not found', 'INNING_NOT_FOUND', 'Inning not found', undefined, null, HttpStatus.NOT_FOUND);
+      }
+
+      const partnerships = await this.partnershipModel.find({
+        matchId: matchObjectId,
+        inningId: inning._id
+      }).populate('batsman1Id', 'name shortName playerKey').populate('batsman2Id', 'name shortName playerKey').sort({ wicketNumber: 1 }).lean();
+
+      return this.responseService.successWithSingle(
+        partnerships,
+        'Partnerships retrieved successfully',
+        'PARTNERSHIPS_RETRIEVED',
+        'Partnerships retrieved successfully',
+        undefined,
+        HttpStatus.OK
+      );
+    } catch (error) {
+      this.logger.error(`getPartnerships error:`, error);
+      return this.responseService.error('Failed to fetch partnerships', 'PARTNERSHIPS_FETCH_FAILED', error.message, undefined, null, HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  // Upsert Partnerships
+  async upsertPartnerships(matchId: string, inningNumber: number, partnerships: any[]): Promise<IResponseWithStatusCode<any>> {
+    try {
+      if (!Types.ObjectId.isValid(matchId)) {
+        return this.responseService.error('Invalid match ID', 'INVALID_MATCH_ID', 'Match ID must be a valid MongoDB ObjectId', undefined, null, HttpStatus.BAD_REQUEST);
+      }
+
+      const execute = async (s: ClientSession) => {
+        const matchObjectId = new Types.ObjectId(matchId);
+
+        let targetInning = inningNumber;
+        if (!targetInning) {
+          const match = await this.matchModel.findById(matchObjectId).select('currentInning').session(s).lean();
+          targetInning = match?.currentInning || 1;
+        }
+
+        const inning = await this.inningModel.findOne({
+          matchId: matchObjectId,
+          inningNumber: targetInning
+        }).session(s).lean();
+
+        if (!inning) {
+          return this.responseService.error('Inning not found', 'INNING_NOT_FOUND', 'Inning not found', undefined, null, HttpStatus.NOT_FOUND);
+        }
+
+        // Delete existing and insert new ones
+        await this.partnershipModel.deleteMany({
+          matchId: matchObjectId,
+          inningId: inning._id
+        }).session(s);
+
+        const newPartnerships = partnerships.map(p => ({
+          ...p,
+          matchId: matchObjectId,
+          inningId: inning._id
+        }));
+
+        if (newPartnerships.length > 0) {
+          await this.partnershipModel.insertMany(newPartnerships, { session: s });
+        }
+
+        return this.responseService.successWithSingle(
+          null,
+          'Partnerships updated successfully',
+          'PARTNERSHIPS_UPDATED',
+          'Partnerships updated successfully',
+          undefined,
+          HttpStatus.OK
+        );
+      };
+
+      return await this.runInTransaction(execute);
+    } catch (error) {
+      this.logger.error(`upsertPartnerships error:`, error);
+      return this.responseService.error('Failed to update partnerships', 'PARTNERSHIPS_UPDATE_FAILED', error.message, undefined, null, HttpStatus.INTERNAL_SERVER_ERROR);
     }
   }
 
@@ -2712,15 +2815,29 @@ export class LiveMatchService {
    * Update commentary text
    * Note: commentaryId here refers to the ballId within an OverSummary
    */
-  async updateCommentary(commentaryId: string, commentary: string): Promise<IResponseWithStatusCode<any>> {
+  /**
+   * Update commentary text
+   * Note: commentaryId here refers to the ballId within an OverSummary
+   */
+  async updateCommentary(commentaryId: string, commentary: string, matchId?: string): Promise<IResponseWithStatusCode<any>> {
     try {
-      // Find the over summary that contains this ballId
-      const overSummary = await this.overSummaryModel.findOne({
+      const idQuery = Types.ObjectId.isValid(commentaryId)
+        ? [new Types.ObjectId(commentaryId), commentaryId]
+        : [commentaryId];
+
+      const query: any = {
         $or: [
-          { 'ballsData.ballId': commentaryId },
-          { 'overHighlight.ballId': commentaryId }
+          { 'ballsData.ballId': { $in: idQuery } },
+          { 'overHighlight.ballId': { $in: idQuery } }
         ]
-      });
+      };
+
+      if (matchId && Types.ObjectId.isValid(matchId)) {
+        query.matchId = { $in: [new Types.ObjectId(matchId), matchId] };
+      }
+
+      // Find the over summary that contains this ballId
+      const overSummary = await this.overSummaryModel.findOne(query);
 
       if (!overSummary) {
         return this.responseService.error(
@@ -2734,23 +2851,36 @@ export class LiveMatchService {
       }
 
       // Update the ball in ballsData
-      const ballIndex = overSummary.ballsData?.findIndex((b: any) => b.ballId === commentaryId) ?? -1;
-      if (ballIndex !== -1) {
-        overSummary.ballsData[ballIndex].commentary = commentary;
-        overSummary.markModified('ballsData');
-      } else if (overSummary.overHighlight?.ballId === commentaryId) {
-        overSummary.overHighlight.commentary = commentary;
-        overSummary.markModified('overHighlight');
+      let modified = false;
+      if (overSummary.ballsData && Array.isArray(overSummary.ballsData)) {
+        overSummary.ballsData.forEach((b: any) => {
+          if (b.ballId?.toString() === commentaryId || b.ballId === commentaryId) {
+            b.commentary = commentary;
+            modified = true;
+          }
+        });
+        if (modified) overSummary.markModified('ballsData');
       }
 
-      await (overSummary as any).save();
+      // Check overHighlight independently (not else if)
+      if (overSummary.overHighlight?.ballId?.toString() === commentaryId || overSummary.overHighlight?.ballId === commentaryId) {
+        overSummary.overHighlight.commentary = commentary;
+        overSummary.markModified('overHighlight');
+        modified = true;
+      }
 
-      const updatedCommentary = ballIndex !== -1
-        ? overSummary.ballsData[ballIndex]
-        : overSummary.overHighlight;
+      if (modified) {
+        await (overSummary as any).save();
+      }
+
+      const updatedBall = overSummary.ballsData?.find((b: any) =>
+        b.ballId?.toString() === commentaryId || b.ballId === commentaryId
+      );
+
+      const responseData = updatedBall || overSummary.overHighlight;
 
       return this.responseService.successWithSingle(
-        { ...updatedCommentary, _id: updatedCommentary.ballId },
+        { ...responseData, _id: responseData?.ballId || commentaryId },
         'Commentary updated successfully',
         'COMMENTARY_UPDATED',
         'Commentary updated successfully',
@@ -2772,14 +2902,24 @@ export class LiveMatchService {
   /**
    * Delete commentary
    */
-  async deleteCommentary(commentaryId: string): Promise<IResponseWithStatusCode<any>> {
+  async deleteCommentary(commentaryId: string, matchId?: string): Promise<IResponseWithStatusCode<any>> {
     try {
-      const overSummary = await this.overSummaryModel.findOne({
+      const idQuery = Types.ObjectId.isValid(commentaryId)
+        ? [new Types.ObjectId(commentaryId), commentaryId]
+        : [commentaryId];
+
+      const query: any = {
         $or: [
-          { 'ballsData.ballId': commentaryId },
-          { 'overHighlight.ballId': commentaryId }
+          { 'ballsData.ballId': { $in: idQuery } },
+          { 'overHighlight.ballId': { $in: idQuery } }
         ]
-      });
+      };
+
+      if (matchId && Types.ObjectId.isValid(matchId)) {
+        query.matchId = { $in: [new Types.ObjectId(matchId), matchId] };
+      }
+
+      const overSummary = await this.overSummaryModel.findOne(query);
 
       if (!overSummary) {
         return this.responseService.error(
@@ -2794,23 +2934,30 @@ export class LiveMatchService {
 
       // For deletion, if it's a "ball" type, we just clear the text to preserve the ball record
       // If it's a highlight type, we could remove it entirely.
-      const ballIndex = overSummary.ballsData?.findIndex((b: any) => b.ballId === commentaryId) ?? -1;
-      if (ballIndex !== -1) {
-        const ball = overSummary.ballsData[ballIndex];
-        if (ball.type === 'ball' || ball.type === 'wicket') {
-          ball.commentary = '';
-          delete ball.highlightData;
-        } else {
-          // Remove highlight entries entirely
-          overSummary.ballsData.splice(ballIndex, 1);
+      // Remove matching entries from ballsData
+      let modified = false;
+      if (overSummary.ballsData && Array.isArray(overSummary.ballsData)) {
+        const initialLength = overSummary.ballsData.length;
+        overSummary.ballsData = overSummary.ballsData.filter((b: any) =>
+          b.ballId?.toString() !== commentaryId && b.ballId !== commentaryId
+        );
+
+        if (overSummary.ballsData.length !== initialLength) {
+          overSummary.markModified('ballsData');
+          modified = true;
         }
-        overSummary.markModified('ballsData');
-      } else if (overSummary.overHighlight?.ballId === commentaryId) {
-        overSummary.overHighlight = null;
-        overSummary.markModified('overHighlight');
       }
 
-      await (overSummary as any).save();
+      // Check overHighlight separately (not else if)
+      if (overSummary.overHighlight?.ballId?.toString() === commentaryId || overSummary.overHighlight?.ballId === commentaryId) {
+        overSummary.overHighlight = null;
+        overSummary.markModified('overHighlight');
+        modified = true;
+      }
+
+      if (modified) {
+        await (overSummary as any).save();
+      }
 
       return this.responseService.successWithSingle(
         { deleted: true, commentaryId },
@@ -2831,9 +2978,6 @@ export class LiveMatchService {
       );
     }
   }
-
-
-
 
   // Evaluate Match Outcome
   async evaluateMatchOutcome(matchId: string): Promise<IResponseWithStatusCode<any>> {
@@ -2890,8 +3034,6 @@ export class LiveMatchService {
           resultText = `${(await this.getTeamName(winnerId))} won by ${margin} wickets`;
         } else if (inn2.totalRuns < inn1.totalRuns) {
           // Team Batting First Won
-          // Note: In real logic, we'd check if overs are done or all out. 
-          // We assume manual trigger implies match end.
           winnerId = inn1.battingTeamId;
           losingTeamId = inn1.bowlingTeamId;
           resultType = 'normal';

@@ -598,9 +598,9 @@ export class LiveMatchController {
   }
 
   @MessagePattern('live-match.updateCommentary')
-  async updateCommentary(@Payload() payload: { commentaryId: string; commentary: string }) {
+  async updateCommentary(@Payload() payload: { matchId?: string; commentaryId: string; commentary: string }) {
     try {
-      const result = await this.liveMatchService.updateCommentary(payload.commentaryId, payload.commentary);
+      const result = await this.liveMatchService.updateCommentary(payload.commentaryId, payload.commentary, payload.matchId);
       return result;
     } catch (error: any) {
       this.logger.error('Error in updateCommentary', error.stack || error.message || error);
@@ -609,9 +609,9 @@ export class LiveMatchController {
   }
 
   @MessagePattern('live-match.deleteCommentary')
-  async deleteCommentary(@Payload() payload: { commentaryId: string }) {
+  async deleteCommentary(@Payload() payload: { matchId?: string; commentaryId: string }) {
     try {
-      const result = await this.liveMatchService.deleteCommentary(payload.commentaryId);
+      const result = await this.liveMatchService.deleteCommentary(payload.commentaryId, payload.matchId);
       return result;
     } catch (error: any) {
       this.logger.error('Error in deleteCommentary', error.stack || error.message || error);
@@ -641,6 +641,26 @@ export class LiveMatchController {
       return result;
     } catch (error: any) {
       this.logger.error('Error in startSuperOver', error.stack || error.message || error);
+      throw error;
+    }
+  }
+
+  @MessagePattern('live-match.get-partnerships')
+  async getPartnerships(@Payload() data: { matchId: string; inningNumber?: number }) {
+    try {
+      return await this.liveMatchService.getPartnerships(data.matchId, data.inningNumber);
+    } catch (error: any) {
+      this.logger.error('Error in getPartnerships', error.stack || error.message || error);
+      throw error;
+    }
+  }
+
+  @MessagePattern('live-match.upsert-partnerships')
+  async upsertPartnerships(@Payload() data: { matchId: string; inningNumber: number; partnerships: any[] }) {
+    try {
+      return await this.liveMatchService.upsertPartnerships(data.matchId, data.inningNumber, data.partnerships);
+    } catch (error: any) {
+      this.logger.error('Error in upsertPartnerships', error.stack || error.message || error);
       throw error;
     }
   }

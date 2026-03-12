@@ -12,6 +12,7 @@ import { OverSummary, OverSummaryDocument } from '../../../entities/over-summary
 import { RedisPublisherService, MatchUpdatePayload } from '../../../common/redis/redis-publisher.service';
 import { CommentaryGeneratorService } from '../services/commentary-generator.service';
 import { Player } from '../../../entities/player.entity';
+import { Partnership, PartnershipDocument } from '../../../entities/partnership.entity';
 
 @Injectable()
 export class ScoreEngineService {
@@ -24,9 +25,221 @@ export class ScoreEngineService {
         @InjectModel(BattingScorecard.name) private battingModel: Model<BattingScorecardDocument>,
         @InjectModel(BowlingScorecard.name) private bowlingModel: Model<BowlingScorecardDocument>,
         @InjectModel(OverSummary.name) private overSummaryModel: Model<OverSummaryDocument>,
+        @InjectModel(Partnership.name) private partnershipModel: Model<PartnershipDocument>,
         private redisPublisher: RedisPublisherService,
         private commentaryGenerator: CommentaryGeneratorService,
     ) { }
+
+    /**
+     * Helper to get Player ID string safely (handles both ObjectId and populated object)
+     */
+    private getPlayerIdString(playerId: any): string {
+        if (!playerId) return '';
+        if (playerId instanceof Types.ObjectId) return playerId.toString();
+        if (typeof playerId === 'string') return playerId;
+        if (playerId._id) return playerId._id.toString();
+        return playerId.toString();
+    }
+
+    /**
+     * Automated Partnership Tracking
+     * Creates or updates partnership records based on match events
+     */
+    private async updatePartnership(state: MatchState, event: BallEvent, isWicket: boolean) {
+        try {
+            const { inning, striker, nonStriker } = state;
+            if (!striker || !nonStriker) return;
+
+            const wicketNumber = inning.totalWickets + (isWicket ? 0 : 1);
+            const runsScored = event.runs || 0;
+            const extras = event.extras || 0;
+            const isWide = event.type === 'WIDE';
+            const isNoBall = event.type === 'NO_BALL';
+            const isLegalBall = !isWide && !isNoBall && event.type !== 'PENALTY';
+
+            // Find or create active partnership for this wicket
+            let partnership = await this.partnershipModel.findOne({
+                matchId: inning.matchId,
+                inningId: inning._id,
+                wicketNumber,
+                isActive: true
+            });
+
+            if (!partnership && !isWicket) {
+                // Identify Newcomer vs Survivor
+                let nbId = striker.playerId;
+                let obId = nonStriker.playerId;
+
+                if (wicketNumber > 1) {
+                    const prevPartnership = await this.partnershipModel.findOne({
+                        matchId: inning.matchId,
+                        inningId: inning._id,
+                        wicketNumber: wicketNumber - 1
+                    });
+                    if (prevPartnership) {
+                        const prevPlayers = [
+                            prevPartnership.batsman1Id.toString(),
+                            prevPartnership.batsman2Id.toString()
+                        ];
+                        // Striker is survivor if they were in the previous partnership
+                        const strikerIdStr = this.getPlayerIdString(striker.playerId);
+                        const nonStrikerIdStr = this.getPlayerIdString(nonStriker.playerId);
+
+                        if (prevPlayers.includes(strikerIdStr)) {
+                            obId = striker.playerId;
+                            nbId = nonStriker.playerId;
+                        } else {
+                            // Non-striker is survivor
+                            obId = nonStriker.playerId;
+                            nbId = striker.playerId;
+                        }
+                    }
+                }
+
+                partnership = new this.partnershipModel({
+                    matchId: inning.matchId,
+                    inningId: inning._id,
+                    wicketNumber,
+                    batsman1Id: nbId,
+                    batsman2Id: obId,
+                    isActive: true,
+                    startOver: (inning.totalBalls - (isLegalBall ? 1 : 0)) / 6
+                });
+            }
+
+            if (partnership) {
+                const totalRuns = runsScored + extras;
+                partnership.totalRuns += totalRuns;
+                if (isLegalBall) partnership.totalBalls += 1;
+
+                const strikerIdStr = this.getPlayerIdString(striker.playerId);
+                const nonStrikerIdStr = this.getPlayerIdString(nonStriker.playerId);
+                const b1IdStr = this.getPlayerIdString(partnership.batsman1Id);
+                const b2IdStr = this.getPlayerIdString(partnership.batsman2Id);
+
+                // Attribute runs/balls to the correct batsman in partnership
+                if (b1IdStr === strikerIdStr) {
+                    if (!isWide && event.type !== 'PENALTY') {
+                        const batterRuns = (event.type === 'BYE' || event.type === 'LEG_BYE') ? 0 : runsScored;
+                        partnership.batsman1Runs += batterRuns;
+                    }
+                    if (isLegalBall || isNoBall) partnership.batsman1Balls += 1;
+                } else if (b2IdStr === strikerIdStr) {
+                    if (!isWide && event.type !== 'PENALTY') {
+                        const batterRuns = (event.type === 'BYE' || event.type === 'LEG_BYE') ? 0 : runsScored;
+                        partnership.batsman2Runs += batterRuns;
+                    }
+                    if (isLegalBall || isNoBall) partnership.batsman2Balls += 1;
+                }
+
+                // Match fixed IDs with current striker/non-striker to sync UI fields
+                const b1 = strikerIdStr === b1IdStr ? striker : nonStriker;
+                const b2 = nonStrikerIdStr === b2IdStr ? nonStriker : striker;
+
+                partnership.nbName = (b1.playerId as any).name || 'Batsman';
+                partnership.obName = (b2.playerId as any).name || 'Batsman';
+                partnership.nbRun = b1.runs.toString();
+                partnership.obRun = b2.runs.toString();
+                partnership.nbBall = b1.balls.toString();
+                partnership.obBall = b2.balls.toString();
+                partnership.score = `${inning.totalRuns}/${inning.totalWickets}`;
+
+                if (isWicket) {
+                    partnership.isActive = false;
+                    partnership.isBroken = true;
+                    partnership.endOver = inning.totalBalls / 6;
+                    partnership.wicket = `${inning.totalRuns}/${inning.totalWickets}`;
+                    // The striker is the one who got out
+                    partnership.batsman = (striker.playerId as any).name || 'Batsman';
+                }
+
+                await partnership.save();
+            }
+        } catch (error) {
+            this.logger.error(`Error updating partnership: ${error.message}`);
+        }
+    }
+
+    /**
+     * Revert Partnership Statistics (for UNDO)
+     */
+    private async reversePartnership(state: MatchState, event: BallEvent, isWicket: boolean) {
+        try {
+            const { inning, striker } = state;
+            const wicketNumber = inning.totalWickets + (isWicket ? 1 : 1);
+
+            const partnership = await this.partnershipModel.findOne({
+                matchId: inning.matchId,
+                inningId: inning._id,
+                wicketNumber
+            }).sort({ updatedAt: -1 });
+
+            if (partnership) {
+                const runsScored = event.runs || 0;
+                const extras = event.extras || 0;
+                const totalRuns = runsScored + extras;
+                const isWide = event.type === 'WIDE';
+                const isNoBall = event.type === 'NO_BALL';
+                const isLegalBall = !isWide && !isNoBall && event.type !== 'PENALTY';
+
+                partnership.totalRuns = Math.max(0, partnership.totalRuns - totalRuns);
+                if (isLegalBall) partnership.totalBalls = Math.max(0, partnership.totalBalls - 1);
+
+                if (striker) {
+                    const strikerIdStr = this.getPlayerIdString(striker.playerId);
+                    const b1IdStr = this.getPlayerIdString(partnership.batsman1Id);
+                    const b2IdStr = this.getPlayerIdString(partnership.batsman2Id);
+
+                    if (b1IdStr === strikerIdStr) {
+                        if (!isWide && event.type !== 'PENALTY' && !isWicket) {
+                            const batterRuns = (event.type === 'BYE' || event.type === 'LEG_BYE') ? 0 : runsScored;
+                            partnership.batsman1Runs = Math.max(0, partnership.batsman1Runs - batterRuns);
+                        }
+                        if (isLegalBall || isNoBall) partnership.batsman1Balls = Math.max(0, partnership.batsman1Balls - 1);
+                    } else if (b2IdStr === strikerIdStr) {
+                        if (!isWide && event.type !== 'PENALTY' && !isWicket) {
+                            const batterRuns = (event.type === 'BYE' || event.type === 'LEG_BYE') ? 0 : runsScored;
+                            partnership.batsman2Runs = Math.max(0, partnership.batsman2Runs - batterRuns);
+                        }
+                        if (isLegalBall || isNoBall) partnership.batsman2Balls = Math.max(0, partnership.batsman2Balls - 1);
+                    }
+                }
+
+                if (isWicket) {
+                    partnership.isActive = true;
+                    partnership.isBroken = false;
+                    partnership.endOver = undefined;
+                    partnership.wicket = undefined;
+                    partnership.batsman = undefined;
+                }
+
+                // Match fixed IDs with current striker/non-striker to sync UI fields
+                // This ensures the labels (NB/OB) stay consistent with the robust identification
+                const nonStriker = state.nonStriker;
+                if (striker && nonStriker) {
+                    const strikerIdStr = this.getPlayerIdString(striker.playerId);
+                    const nonStrikerIdStr = this.getPlayerIdString(nonStriker.playerId);
+                    const b1IdStr = this.getPlayerIdString(partnership.batsman1Id);
+                    const b2IdStr = this.getPlayerIdString(partnership.batsman2Id);
+
+                    const b1 = strikerIdStr === b1IdStr ? striker : nonStriker;
+                    const b2 = nonStrikerIdStr === b2IdStr ? nonStriker : striker;
+
+                    partnership.nbName = (b1.playerId as any).name || 'Batsman';
+                    partnership.obName = (b2.playerId as any).name || 'Batsman';
+                    partnership.nbRun = b1.runs.toString();
+                    partnership.obRun = b2.runs.toString();
+                    partnership.nbBall = b1.balls.toString();
+                    partnership.obBall = b2.balls.toString();
+                }
+                partnership.score = `${inning.totalRuns}/${inning.totalWickets}`;
+
+                await partnership.save();
+            }
+        } catch (error) {
+            this.logger.error(`Error reversing partnership: ${error.message}`);
+        }
+    }
 
     /**
      * Main entry point for processing a ball or wicket
@@ -250,6 +463,7 @@ export class ScoreEngineService {
         }
 
         this.recordBallData(state, event, false);
+        await this.updatePartnership(state, event, false);
         return state;
     }
 
@@ -345,6 +559,7 @@ export class ScoreEngineService {
             }
 
             this.recordBallData(state, event, true);
+            await this.updatePartnership(state, event, true);
         }
         return state;
     }
@@ -575,7 +790,8 @@ export class ScoreEngineService {
 
         // Handle OVER_END separately
         if (isOverEnd) {
-            this.swapStrike(state); // Reverse strike swap
+            // Already handled by snapshot restoration in processUndo
+            // this.swapStrike(state); 
         } else {
             // 1. Reverse Inning Updates
             inning.totalRuns = Math.max(0, inning.totalRuns - (runsScored + extras));
@@ -604,10 +820,14 @@ export class ScoreEngineService {
             }
 
             // 2. Reverse Strike Rotation (BEFORE updating striker stats)
-            // This ensures the correct striker is selected for stat reversal if they rotated on an odd run
+            // DEPRECATED: Strike swapping is now handled by processUndo which restores 
+            // exact pre-ball identities from the snapshot. Swapping here caused
+            // stats to be subtracted from the wrong player.
+            /*
             if (!isWide && !isWicket && runsScored % 2 !== 0) {
                 this.swapStrike(state);
             }
+            */
 
             // 3. Reverse Striker Updates
             if (state.striker && !isWide && !isPenalty) {
@@ -700,7 +920,12 @@ export class ScoreEngineService {
             }
         }
 
-        // 5. Revert over summary (handle composite un-merge if needed)
+        // 5. Reverse Partnership Updates
+        if (!isOverEnd) {
+            await this.reversePartnership(state, event, isWicket);
+        }
+
+        // 6. Revert over summary (handle composite un-merge if needed)
         await this.revertOverSummaryEvent(state, event);
     }
 

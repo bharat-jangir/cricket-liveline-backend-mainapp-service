@@ -10,6 +10,7 @@ import { BowlingScorecard, BowlingScorecardSchema } from '../../../entities/bowl
 import { MatchSquad, MatchSquadSchema } from '../../../entities/match-squad.entity';
 import { OverSummary, OverSummarySchema } from '../../../entities/over-summary.entity';
 import { Player, PlayerSchema } from '../../../entities/player.entity';
+import { Partnership, PartnershipSchema } from '../../../entities/partnership.entity';
 import { RedisPublisherService } from '../../../common/redis/redis-publisher.service';
 import { CommentaryGeneratorService } from '../services/commentary-generator.service';
 
@@ -24,6 +25,7 @@ import { CommentaryGeneratorService } from '../services/commentary-generator.ser
             { name: MatchSquad.name, schema: MatchSquadSchema },
             { name: OverSummary.name, schema: OverSummarySchema },
             { name: Player.name, schema: PlayerSchema },
+            { name: Partnership.name, schema: PartnershipSchema },
         ]),
     ],
     providers: [ScoreEngineService, RedisPublisherService, CommentaryGeneratorService],
