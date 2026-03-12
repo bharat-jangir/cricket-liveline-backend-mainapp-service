@@ -741,6 +741,7 @@ export class LiveMatchService {
         }
 
         // 1. Handle Inning Transition / Creation
+        const originalInningNum = match.currentInning;
         let currentInningNum = match.currentInning;
         if (updateDto.currentInning !== undefined && updateDto.currentInning !== match.currentInning) {
           // Update match current inning
@@ -832,14 +833,16 @@ export class LiveMatchService {
           inningUpdate.bowlingTeamId = new Types.ObjectId(updateDto.bowlingTeamId);
         }
 
-        // Manual Score Updates
-        if (updateDto.score) {
+        // Manual Score Updates - Ignore if we are switching innings to prevent stale data overwrites
+        const isSwitchingInning = updateDto.currentInning !== undefined && updateDto.currentInning !== originalInningNum;
+
+        if (updateDto.score && !isSwitchingInning) {
           const [runs, wickets] = updateDto.score.split('/').map(n => parseInt(n, 10));
           if (!isNaN(runs)) inningUpdate.totalRuns = runs;
           if (!isNaN(wickets)) inningUpdate.totalWickets = wickets;
         }
 
-        if (updateDto.overs) {
+        if (updateDto.overs && !isSwitchingInning) {
           const [overPart, ballPart] = updateDto.overs.split('.').map(n => parseInt(n, 10));
           if (!isNaN(overPart)) {
             const totalBalls = (overPart * 6) + (ballPart || 0);
