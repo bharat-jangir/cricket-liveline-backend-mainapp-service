@@ -110,8 +110,7 @@ export class Tournament {
 export const TournamentSchema = SchemaFactory.createForClass(Tournament);
 
 // Indexes
-TournamentSchema.index({ slug: 1 });
-TournamentSchema.index({ code: 1 });
+
 TournamentSchema.index({ status: 1, startDate: -1 });
 TournamentSchema.index({ isFeatured: 1, priority: -1 });
 

@@ -196,8 +196,7 @@ export class Team extends Document {
 
 export const TeamSchema = SchemaFactory.createForClass(Team);
 
-// Indexes
-TeamSchema.index({ code: 1 }, { unique: true });
+
 TeamSchema.index({ name: 1 });
 TeamSchema.index({ shortName: 1 });
 TeamSchema.index({ country: 1 });

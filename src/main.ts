@@ -35,7 +35,7 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
     logger: new CustomLogger(),
   });
-  
+
   // Global exception filter
   app.useGlobalFilters(new HttpExceptionFilter());
 
@@ -55,9 +55,10 @@ async function bootstrap() {
   });
 
   // Connect TCP microservice
-  const tcpHost = process.env.MAIN_APP_HOST || 'localhost';
+  // Use 127.0.0.1 explicitly to avoid localhost resolution issues (IPv4 vs IPv6)
+  const tcpHost = process.env.MAIN_APP_HOST || '127.0.0.1';
   const tcpPort = parseInt(process.env.MAIN_APP_TCP_PORT || '3001');
-  
+
   const microservice = app.connectMicroservice<MicroserviceOptions>({
     transport: Transport.TCP,
     options: {
@@ -68,9 +69,10 @@ async function bootstrap() {
 
   await app.startAllMicroservices();
 
-  const httpPort = process.env.MAIN_APP_HTTP_PORT || process.env.PORT || 3001;
-  await app.listen(httpPort);
-  
+  // Use a different port for HTTP vs TCP
+  const httpPort = process.env.MAIN_APP_HTTP_PORT || 5001;
+  await app.listen(httpPort, '0.0.0.0');
+
   const logger = new Logger('Bootstrap');
   logger.log(`🚀 Main App HTTP is running on: http://localhost:${httpPort}`);
   logger.log(`📡 Main App TCP microservice is running on: ${tcpHost}:${tcpPort}`);

@@ -177,6 +177,4 @@ export class VenueStats {
 
 export const VenueStatsSchema = SchemaFactory.createForClass(VenueStats);
 
-// Indexes
-VenueStatsSchema.index({ venueId: 1 });
 

@@ -108,7 +108,7 @@ export class Video {
 export const VideoSchema = SchemaFactory.createForClass(Video);
 
 // Indexes
-VideoSchema.index({ slug: 1 });
+
 VideoSchema.index({ status: 1, publishedAt: -1 });
 VideoSchema.index({ matchId: 1, publishedAt: -1 });
 VideoSchema.index({ type: 1, publishedAt: -1 });

@@ -77,8 +77,4 @@ SeriesTeamSchema.index({ seriesId: 1, format: 1 }); // For getSeriesTeams by for
 SeriesTeamSchema.index({ seriesId: 1, isActive: 1 }); // For filtering active teams
 SeriesTeamSchema.index({ teamId: 1 }); // For team-based queries
 
-// Additional indexes for common queries
-SeriesTeamSchema.index({ seriesId: 1, format: 1 }); // For getSeriesTeams by format
-SeriesTeamSchema.index({ seriesId: 1, isActive: 1 }); // For filtering active teams
-SeriesTeamSchema.index({ teamId: 1 }); // For team-based queries
 

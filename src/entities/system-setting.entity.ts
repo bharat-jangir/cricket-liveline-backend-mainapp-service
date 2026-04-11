@@ -35,5 +35,5 @@ export class SystemSetting {
 export const SystemSettingSchema = SchemaFactory.createForClass(SystemSetting);
 
 // Indexes
-SystemSettingSchema.index({ key: 1 });
+
 

@@ -345,7 +345,7 @@ export class Match {
 export const MatchSchema = SchemaFactory.createForClass(Match);
 
 // Indexes
-MatchSchema.index({ slug: 1 });
+
 MatchSchema.index({ status: 1, matchDate: -1 });
 MatchSchema.index({ tournamentId: 1, matchDate: -1 });
 MatchSchema.index({ teamAId: 1, teamBId: 1, status: 1 });

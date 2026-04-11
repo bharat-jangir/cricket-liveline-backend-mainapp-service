@@ -400,6 +400,7 @@ export class LiveMatchController {
   }
 
   private parseSimpleEvent(eventString: string): any | null {
+    if (!eventString) return null;
     const event = eventString.toLowerCase().trim();
 
     // Regular runs (0-6)

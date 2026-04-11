@@ -204,7 +204,7 @@ export const PlayerSchema = SchemaFactory.createForClass(Player);
 
 // Indexes
 PlayerSchema.index({ name: 1 });
-PlayerSchema.index({ slug: 1 });
+
 PlayerSchema.index({ country: 1 });
 PlayerSchema.index({ role: 1, isActive: 1 });
 PlayerSchema.index({ name: 'text', fullName: 'text' });

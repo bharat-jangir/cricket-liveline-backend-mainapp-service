@@ -164,8 +164,7 @@ export class Series extends Document {
 
 export const SeriesSchema = SchemaFactory.createForClass(Series);
 
-// Indexes
-SeriesSchema.index({ key: 1 }, { unique: true });
+
 SeriesSchema.index({ name: 1 });
 SeriesSchema.index({ shortName: 1 });
 SeriesSchema.index({ seriesType: 1 });

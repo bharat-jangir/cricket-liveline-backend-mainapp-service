@@ -99,7 +99,7 @@ export class News {
 export const NewsSchema = SchemaFactory.createForClass(News);
 
 // Indexes
-NewsSchema.index({ slug: 1 });
+
 NewsSchema.index({ status: 1, publishedAt: -1 });
 NewsSchema.index({ categoryId: 1, publishedAt: -1 });
 NewsSchema.index({ authorId: 1, publishedAt: -1 });
