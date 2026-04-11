@@ -190,6 +190,7 @@ export class MatchesService {
         .find(filter)
         .populate('teamAId', 'name shortName code logo')
         .populate('teamBId', 'name shortName code logo')
+        .populate('venueId', 'name city country')
         .populate('seriesId', 'name shortName'); // Always populate seriesId if it exists
 
       // Don't populate tournamentId - Tournament model may not be registered
@@ -323,8 +324,9 @@ export class MatchesService {
           .findById(id)
           .populate('seriesId', 'name shortName')
           .lean();
-        if (matchWithSeries) {
-          Object.assign(match, matchWithSeries);
+        if (matchWithSeries && matchWithSeries.seriesId) {
+          // Only copy seriesId — don't overwrite already-populated teamAId/teamBId/venueId
+          match.seriesId = matchWithSeries.seriesId;
         }
       }
 
@@ -424,6 +426,7 @@ export class MatchesService {
       const populatePaths: any[] = [
         { path: 'teamAId', select: 'name shortName code logo' },
         { path: 'teamBId', select: 'name shortName code logo' },
+        { path: 'venueId', select: 'name city country' },
       ];
 
       if (match.seriesId) {

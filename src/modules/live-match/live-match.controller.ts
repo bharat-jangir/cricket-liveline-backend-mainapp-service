@@ -87,9 +87,11 @@ export class LiveMatchController {
   }
 
   @MessagePattern('live-match.getSquads')
-  async getMatchSquads(@Payload() matchId: string) {
+  async getMatchSquads(@Payload() payload: any) {
     try {
-      const result = await this.liveMatchService.getMatchSquads(matchId);
+      // Accept both plain string and { matchId } object payloads
+      const mid = typeof payload === 'string' ? payload : payload?.matchId || payload;
+      const result = await this.liveMatchService.getMatchSquads(mid);
       return result;
     } catch (error: any) {
       this.logger.error('Error in getMatchSquads', error.stack || error.message || error);

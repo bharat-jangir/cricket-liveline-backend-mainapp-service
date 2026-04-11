@@ -297,6 +297,9 @@ export class LiveMatchService {
       })
         .populate('battingTeamId', 'name shortName code logo')
         .populate('bowlingTeamId', 'name shortName code logo')
+        .populate('currentStrikerId', 'name shortName playerKey')
+        .populate('currentNonStrikerId', 'name shortName playerKey')
+        .populate('currentBowlerId', 'name shortName playerKey')
         .lean();
 
       const innings = await this.inningModel.find({ matchId: matchObjectId })
