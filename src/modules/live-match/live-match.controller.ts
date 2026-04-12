@@ -113,7 +113,7 @@ export class LiveMatchController {
   @MessagePattern('live-match.getScorecard')
   async getScorecard(@Payload() payload: { matchId: string; inningNumber: number }) {
     try {
-      this.logger.log(`getScorecard called with:`, JSON.stringify(payload));
+      this.logger.log(`[RELOAD_VERIFY] getScorecard called at ${new Date().toLocaleTimeString()} with:`, JSON.stringify(payload));
       const result = await this.liveMatchService.getScorecard(payload.matchId, payload.inningNumber);
       return result;
     } catch (error: any) {
@@ -574,6 +574,18 @@ export class LiveMatchController {
       return result;
     } catch (error: any) {
       this.logger.error('Error in updateMatchSquad', error.stack || error.message || error);
+      throw error;
+    }
+  }
+
+  @MessagePattern('live-match.get-partnerships')
+  async getPartnerships(@Payload() payload: { matchId: string; inningNumber: number }) {
+    try {
+      this.logger.log(`getPartnerships called with:`, JSON.stringify(payload));
+      const result = await this.liveMatchService.getPartnerships(payload.matchId, payload.inningNumber);
+      return result;
+    } catch (error: any) {
+      this.logger.error('Error in getPartnerships', error.stack || error.message || error);
       throw error;
     }
   }

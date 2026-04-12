@@ -130,6 +130,7 @@ export class Inning {
   @Prop({
     type: {
       name: String,
+      playerName: String,
       dismissal: String,
       runs: Number,
       balls: Number,
@@ -143,6 +144,7 @@ export class Inning {
   })
   lastWicket?: {
     name: string;
+    playerName: string;
     dismissal: string;
     runs: number;
     balls: number;

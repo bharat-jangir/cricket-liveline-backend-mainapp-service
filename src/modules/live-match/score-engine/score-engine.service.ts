@@ -166,7 +166,7 @@ export class ScoreEngineService {
     private async reversePartnership(state: MatchState, event: BallEvent, isWicket: boolean) {
         try {
             const { inning, striker } = state;
-            const wicketNumber = inning.totalWickets + (isWicket ? 1 : 1);
+            const wicketNumber = inning.totalWickets + (isWicket ? 1 : 0);
 
             const partnership = await this.partnershipModel.findOne({
                 matchId: inning.matchId,
@@ -507,6 +507,7 @@ export class ScoreEngineService {
             // Update lastWicket in inning
             inning.lastWicket = {
                 name: (striker.playerId as any)?.name || `Player ${striker.playerId}`,
+                playerName: (striker.playerId as any)?.name || `Player ${striker.playerId}`,
                 dismissal: event.wicketType || 'bowled',
                 runs: striker.runs,
                 balls: striker.balls,

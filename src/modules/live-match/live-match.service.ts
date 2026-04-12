@@ -18,6 +18,7 @@ import { CreateSessionDto } from './dto/create-session.dto';
 import { UpdateSessionDto } from './dto/update-session.dto';
 import { LiveMatchSession } from '../../entities/live-match-session.entity';
 import { Partnership } from '../../entities/partnership.entity';
+import { ScoreHistory } from '../../entities/score-history.entity';
 import { ResponseService, IResponseWithStatusCode } from '../../common/services/response.service';
 
 @Injectable()
@@ -33,6 +34,7 @@ export class LiveMatchService {
     @InjectModel(OverSummary.name) private overSummaryModel: Model<OverSummary>,
     @InjectModel(LiveMatchSession.name) private liveMatchSessionModel: Model<LiveMatchSession>,
     @InjectModel(Partnership.name) private partnershipModel: Model<Partnership>,
+    @InjectModel(ScoreHistory.name) private scoreHistoryModel: Model<ScoreHistory>,
     @InjectConnection() private readonly connection: Connection,
     private readonly responseService: ResponseService,
   ) { }
@@ -383,11 +385,10 @@ export class LiveMatchService {
             }
           }
 
-          if (target) {
+        if (target) {
             const currentRuns = currentInning.totalRuns;
             const runsNeeded = Math.max(0, target - currentRuns);
 
-            const ballsPerOver = match.ballsPerOver || 6;
             // Use large number for tests if not defined
             const maxOvers = match.oversPerInning || (match.matchFormat === 'test' ? 9999 : 20);
             const maxBalls = maxOvers * ballsPerOver;
@@ -401,6 +402,93 @@ export class LiveMatchService {
             };
           }
         }
+
+        // Fetch last 3 overs for recent balls strip
+        const lastOvers = await this.overSummaryModel
+          .find({
+            matchId: matchObjectId,
+            inningId: (currentInning as any)?._id,
+          })
+          .sort({ overNumber: -1 })
+          .limit(3)
+          .lean();
+
+        // Flatten balls (reverse to ascending order, then map)
+        const recentBalls = lastOvers
+          .reverse()
+          .flatMap(over => {
+            const items = [];
+
+            // Add over start marker
+            items.push({
+              type: 'over_start',
+              overNumber: over.overNumber
+            } as any);
+
+            // Add balls
+            (over.ballsData || []).forEach(ball => {
+              items.push({
+                ...ball,
+                overNumber: over.overNumber,
+                type: 'ball'
+              });
+            });
+
+            // Add over summary after each over
+            if (items.length > 0) { // Only add summary if there were actually balls/starts
+              items.push({
+                type: 'over_summary',
+                overNumber: over.overNumber,
+                runs: over.runs,
+                wickets: over.wickets
+              } as any);
+            }
+            return items;
+          });
+
+        // Add current "live" balls from ScoreHistory (not yet summarized)
+        const lastSummarizedOver = lastOvers.length > 0 ? lastOvers[lastOvers.length - 1].overNumber : 0;
+        const currentOverNumber = Math.floor(currentInning.totalBalls / (match.ballsPerOver || 6)) + 1;
+
+        // Fetch scoring events for the current over
+        const currentOverEvents = await this.scoreHistoryModel.find({
+          matchId: matchObjectId,
+          inningId: (currentInning as any)?._id,
+        }).sort({ ballNumber: 1 }).lean();
+
+        // Filter for events after the last completed over
+        const liveEvents = currentOverEvents.filter(hist => {
+          const ballOverNum = Math.floor((hist.ballNumber - 1) / ballsPerOver) + 1;
+          return ballOverNum > lastSummarizedOver;
+        });
+
+        if (liveEvents.length > 0) {
+          // If we transitioned to a new over, add a header
+          const firstLiveOver = Math.floor((liveEvents[0].ballNumber - 1) / ballsPerOver) + 1;
+          if (recentBalls.length === 0 || lastSummarizedOver < firstLiveOver) {
+             recentBalls.push({
+               type: 'over_start',
+               overNumber: firstLiveOver
+             } as any);
+          }
+
+          liveEvents.forEach(hist => {
+            const ev = hist.event;
+            if (ev.type === 'OVER_END') return; // Handled by summarization logic
+
+            recentBalls.push({
+               ballLabel: ev.ballLabel || ev.runs?.toString() || '0',
+               runs: ev.runs || 0,
+               isWicket: ev.type === 'WICKET',
+               isExtra: ['WIDE', 'NO_BALL', 'BYE', 'LEG_BYE'].includes(ev.type),
+               extraType: ev.type,
+               overNumber: Math.floor((hist.ballNumber - 1) / ballsPerOver) + 1,
+               type: 'ball'
+            });
+          });
+        }
+
+        liveStatus.recentBalls = recentBalls;
       }
 
       return this.responseService.successWithSingle(
@@ -1273,7 +1361,11 @@ export class LiveMatchService {
 
       // Get batting scorecard
       const battingScorecard = await this.battingScorecardModel
-        .find({ matchId: matchObjectId, inningId: inning._id })
+        .find({ 
+          matchId: matchObjectId, 
+          inningId: inning._id,
+          isVisible: true 
+        })
         .populate('playerId', 'name fullName image role')
         .populate('teamId', 'name shortName code logo')
         .populate('bowlerId', 'name fullName')
@@ -1282,19 +1374,40 @@ export class LiveMatchService {
         .sort({ battingPosition: 1 })
         .lean();
 
+      // Ensure isVisible is explicitly sent and log details
+      const processedBatting = battingScorecard.map(p => ({
+        ...p,
+        isVisible: true
+      }));
+
+      this.logger.log(`[getScorecard] Match: ${matchId}, Inning: ${inningNumber}`);
+      this.logger.log(`[getScorecard] Batting (Strict True): ${processedBatting.map(p => `${(p as any).playerId?.name}`).join(', ')}`);
+
       // Get bowling scorecard
       const bowlingScorecard = await this.bowlingScorecardModel
-        .find({ matchId: matchObjectId, inningId: inning._id })
+        .find({ 
+          matchId: matchObjectId, 
+          inningId: inning._id,
+          isVisible: true 
+        })
         .populate('playerId', 'name fullName image role')
         .populate('teamId', 'name shortName code logo')
         .sort({ bowlingOrder: 1 })
         .lean();
 
+      // Ensure isVisible is explicitly sent and log details
+      const processedBowling = bowlingScorecard.map(p => ({
+        ...p,
+        isVisible: true
+      }));
+
+      this.logger.log(`[getScorecard] Bowling (Strict True): ${processedBowling.map(p => `${(p as any).playerId?.name}`).join(', ')}`);
+
       return this.responseService.successWithSingle(
         {
           inning,
-          batting: battingScorecard,
-          bowling: bowlingScorecard,
+          batting: processedBatting,
+          bowling: processedBowling,
         },
         'Scorecard retrieved successfully',
         'SCORECARD_RETRIEVED',
@@ -1353,6 +1466,7 @@ export class LiveMatchService {
 
         // Convert string IDs to ObjectIds if provided
         const updateData: any = { ...updateDto };
+        this.logger.log(`[updateBatsman] Player: ${playerId}, isVisible: ${updateDto.isVisible}`);
         if (updateDto.bowlerId && Types.ObjectId.isValid(updateDto.bowlerId)) {
           updateData.bowlerId = new Types.ObjectId(updateDto.bowlerId);
         }
@@ -1391,7 +1505,9 @@ export class LiveMatchService {
           await this.inningModel.findByIdAndUpdate(inning._id, {
             lastWicket: {
               name: (battingScorecard.playerId as any)?.name || (battingScorecard.playerId as any)?.fullName || 'Unknown',
-              dismissal: updateData.dismissalText || battingScorecard.dismissalText || 'out',
+              playerName: (battingScorecard.playerId as any)?.name || (battingScorecard.playerId as any)?.fullName || 'Unknown',
+              dismissal: updateDto.dismissalType || 'out',
+              dismissalText: updateData.dismissalText || battingScorecard.dismissalText || 'out',
               runs: updateData.runs !== undefined ? updateData.runs : battingScorecard.runs,
               balls: updateData.balls !== undefined ? updateData.balls : battingScorecard.balls,
               fours: updateData.fours !== undefined ? updateData.fours : battingScorecard.fours,
@@ -1467,6 +1583,7 @@ export class LiveMatchService {
         }
 
         const updateData: any = { ...updateDto };
+        this.logger.log(`[updateBowler] Player: ${playerId}, isVisible: ${updateDto.isVisible}`);
 
         // Auto-calculate stats if in auto mode
         if (updateDto.calculationMode !== 'manual') {
@@ -2763,39 +2880,93 @@ export class LiveMatchService {
         query.inningId = new Types.ObjectId(inningId);
       }
 
+      // 1. Fetch historical summaries
       const summaries = await this.overSummaryModel
         .find(query)
         .sort({ overNumber: -1 }) // Recent overs first
         .lean();
 
+      // 2. Fetch match to get ballsPerOver and current state
+      const match = await this.matchModel.findById(matchObjectId).select('ballsPerOver status').lean();
+      const ballsPerOver = match?.ballsPerOver || 6;
+
+      // 3. Fetch live recent balls from ScoreHistory (ongoing over)
+      // Find the last over number we have in summaries
+      const lastSummarizedOver = summaries.length > 0 ? summaries[0].overNumber : 0;
+      
+      const liveEvents = await this.scoreHistoryModel.find({
+        matchId: matchObjectId,
+        ...((query as any).inningId ? { inningId: (query as any).inningId } : {})
+      }).sort({ ballNumber: -1 }).lean();
+
+      // Filter for events that happened AFTER the last summarized over
+      const liveRecentBalls = liveEvents.filter(hist => {
+        const ballOverNum = Math.floor((hist.ballNumber - 1) / ballsPerOver) + 1;
+        return ballOverNum > lastSummarizedOver;
+      });
+
       // Flatten and transform ballsData into a flat commentary list
       const commentary: any = [];
+      const addedBallIds = new Set<string>();
+
+      // A. Process live recent balls first (most recent)
+      liveRecentBalls.forEach(hist => {
+        const ev = hist.event;
+        const ballId = hist._id?.toString();
+        
+        if (ballId && !addedBallIds.has(ballId)) {
+          commentary.push({
+            ...ev,
+            _id: ballId,
+            ballId: ballId,
+            ballLabel: ev.ballLabel || ev.runs?.toString() || '0',
+            runs: ev.runs || 0,
+            isWicket: ev.type === 'WICKET',
+            timestamp: (hist as any).createdAt
+          });
+          addedBallIds.add(ballId);
+        }
+      });
+
+      // B. Process summaries (historical)
       summaries.forEach(over => {
         // Add over end highlight if it exists
         if (over.overHighlight) {
-          commentary.push({
-            ...over.overHighlight,
-            _id: over.overHighlight.ballId?.toString() || over.overHighlight.ballId,
-            ballId: over.overHighlight.ballId?.toString() || over.overHighlight.ballId,
-            overNumber: over.overNumber,
-            inningId: over.inningId,
-            matchId: over.matchId,
-          });
+          const ballId = over.overHighlight.ballId?.toString() || over.overHighlight.ballId;
+          if (ballId && !addedBallIds.has(ballId)) {
+            commentary.push({
+              ...over.overHighlight,
+              _id: ballId,
+              ballId: ballId,
+              overNumber: over.overNumber,
+              inningId: over.inningId,
+              matchId: over.matchId,
+            });
+            addedBallIds.add(ballId);
+          }
         }
 
         if (over.ballsData && Array.isArray(over.ballsData)) {
           // We want the balls within an over to be in reverse order too (most recent first)
-          const overBalls = [...over.ballsData].reverse().map(ball => ({
-            ...ball,
-            _id: ball.ballId?.toString() || ball.ballId, // Map ballId to _id for frontend compatibility
-            ballId: ball.ballId?.toString() || ball.ballId, // Convert ObjectId to string
-            overNumber: over.overNumber,
-            inningId: over.inningId,
-            matchId: over.matchId,
-          }));
-          commentary.push(...overBalls);
+          const overBalls = [...over.ballsData].reverse();
+          overBalls.forEach(ball => {
+            const bId = (ball as any).ballId?.toString() || (ball as any)._id?.toString();
+            if (bId && !addedBallIds.has(bId)) {
+                commentary.push({
+                    ...ball,
+                    _id: bId,
+                    ballId: bId,
+                    overNumber: over.overNumber,
+                    inningId: over.inningId,
+                    matchId: over.matchId,
+                });
+                addedBallIds.add(bId);
+            }
+          });
         }
       });
+
+      this.logger.log(`[getMatchCommentary] Collected ${commentary.length} items for match ${matchId}`);
 
       return this.responseService.successWithSingle(
         commentary,
