@@ -17,6 +17,11 @@ export interface MatchUpdatePayload {
   matchId: string;
   type: 'BALL' | 'WICKET' | 'OVER_END' | 'MATCH_RESET';
   timestamp: Date;
+  toss?: {
+    tossText: string;
+    winnerId: string;
+    elected: 'bat' | 'bowl';
+  };
 
   // Root-level generalized fields
   score?: string;
