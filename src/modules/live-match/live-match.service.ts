@@ -1841,6 +1841,71 @@ export class LiveMatchService {
     }
   }
 
+  // Get aggregated analytics for charts (Manhattan, Worm, etc.)
+  async getMatchAnalytics(matchId: string): Promise<IResponseWithStatusCode<any>> {
+    try {
+      if (!Types.ObjectId.isValid(matchId)) {
+        return this.responseService.error(
+          'Invalid match ID',
+          'INVALID_MATCH_ID',
+          'Match ID must be a valid MongoDB ObjectId',
+          undefined,
+          null,
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+
+      const matchObjectId = new Types.ObjectId(matchId);
+      const innings = await this.inningModel.find({ matchId: matchObjectId }).sort({ inningNumber: 1 }).lean();
+
+      const analytics = await Promise.all(innings.map(async (inning) => {
+        const overs = await this.overSummaryModel
+          .find({ inningId: inning._id })
+          .sort({ overNumber: 1 })
+          .lean();
+
+        let cumulativeRuns = 0;
+        const processedOvers = overs.map(over => {
+          cumulativeRuns += over.runs;
+          return {
+            overNumber: over.overNumber,
+            runs: over.runs,
+            wickets: over.wickets,
+            cumulativeRuns
+          };
+        });
+
+        return {
+          inningNumber: inning.inningNumber,
+          battingTeamId: inning.battingTeamId,
+          totalRuns: inning.totalRuns,
+          totalWickets: inning.totalWickets,
+          totalOvers: inning.totalOvers,
+          overs: processedOvers,
+          runRate: inning.runRate || (inning.totalOvers > 0 ? inning.totalRuns / inning.totalOvers : 0)
+        };
+      }));
+
+      return this.responseService.successWithSingle(
+        analytics,
+        'Match analytics retrieved successfully',
+        'ANALYTICS_RETRIEVED',
+        'Match analytics retrieved successfully',
+        undefined,
+        HttpStatus.OK,
+      );
+    } catch (error) {
+      return this.responseService.error(
+        'Failed to fetch match analytics',
+        'ANALYTICS_FETCH_FAILED',
+        error.message,
+        undefined,
+        null,
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
   // Create or update over summary
   async upsertOverSummary(
     matchId: string,

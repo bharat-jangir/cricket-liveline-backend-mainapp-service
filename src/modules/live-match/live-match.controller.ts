@@ -579,7 +579,7 @@ export class LiveMatchController {
   }
 
   @MessagePattern('live-match.get-partnerships')
-  async getPartnerships(@Payload() payload: { matchId: string; inningNumber: number }) {
+  async getPartnerships(@Payload() payload: { matchId: string; inningNumber?: number }) {
     try {
       this.logger.log(`getPartnerships called with:`, JSON.stringify(payload));
       const result = await this.liveMatchService.getPartnerships(payload.matchId, payload.inningNumber);
@@ -597,6 +597,17 @@ export class LiveMatchController {
       return result;
     } catch (error: any) {
       this.logger.error('Error in getRecentOvers', error.stack || error.message || error);
+      throw error;
+    }
+  }
+
+  @MessagePattern('live-match.getAnalytics')
+  async getMatchAnalytics(@Payload() matchId: string) {
+    try {
+      const result = await this.liveMatchService.getMatchAnalytics(matchId);
+      return result;
+    } catch (error: any) {
+      this.logger.error('Error in getMatchAnalytics', error.stack || error.message || error);
       throw error;
     }
   }
@@ -660,15 +671,6 @@ export class LiveMatchController {
     }
   }
 
-  @MessagePattern('live-match.get-partnerships')
-  async getPartnerships(@Payload() data: { matchId: string; inningNumber?: number }) {
-    try {
-      return await this.liveMatchService.getPartnerships(data.matchId, data.inningNumber);
-    } catch (error: any) {
-      this.logger.error('Error in getPartnerships', error.stack || error.message || error);
-      throw error;
-    }
-  }
 
   @MessagePattern('live-match.upsert-partnerships')
   async upsertPartnerships(@Payload() data: { matchId: string; inningNumber: number; partnerships: any[] }) {

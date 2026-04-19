@@ -27,17 +27,18 @@ export class CommentaryGeneratorService {
         const commentary = `${bowlerName} to ${batsmanName}`;
         return {
             ballId: new Types.ObjectId(),
-            ballLabel: ball.runs?.toString() || '0',
+            ballLabel: (ball.runs !== undefined ? ball.runs : (ball.runsScored || 0)).toString(),
             commentary,
             shortText: commentary,
             isLegal: !ball.isWide && !ball.isNoBall,
             type: 'ball',
+            runs: ball.runs || 0,
             timestamp: new Date(),
         };
     }
 
     async createWicketHighlight(
-        ball: BallDocument,
+        ball: any,
         dismissedPlayerId: Types.ObjectId,
         dismissalType: string,
         bowlerName: string,
@@ -102,6 +103,7 @@ export class CommentaryGeneratorService {
                 wicketBatsmanSixes: stats ? stats.sixes : (scorecard?.sixes || 0),
                 wicketBatsmanSR: stats ? stats.strikeRate : (scorecard?.strikeRate || 0),
             },
+            runs: ball.runs !== undefined ? ball.runs : (ball.runsScored || 0),
         };
     }
 
