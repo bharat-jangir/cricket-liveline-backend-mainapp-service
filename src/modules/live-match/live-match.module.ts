@@ -16,6 +16,7 @@ import { ScoreHistory, ScoreHistorySchema } from '../../entities/score-history.e
 import { ResponseService } from '../../common/services/response.service';
 import { ScoreEngineModule } from './score-engine/score-engine.module';
 import { CommentaryGeneratorService } from './services/commentary-generator.service';
+import { RedisPublisherService } from '../../common/redis/redis-publisher.service';
 
 
 @Module({
@@ -36,7 +37,7 @@ import { CommentaryGeneratorService } from './services/commentary-generator.serv
     ]),
   ],
   controllers: [LiveMatchController],
-  providers: [LiveMatchService, ResponseService, CommentaryGeneratorService],
+  providers: [LiveMatchService, ResponseService, CommentaryGeneratorService, RedisPublisherService],
   exports: [LiveMatchService],
 })
 export class LiveMatchModule { }

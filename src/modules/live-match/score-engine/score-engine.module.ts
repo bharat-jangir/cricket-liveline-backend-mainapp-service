@@ -11,6 +11,7 @@ import { MatchSquad, MatchSquadSchema } from '../../../entities/match-squad.enti
 import { OverSummary, OverSummarySchema } from '../../../entities/over-summary.entity';
 import { Player, PlayerSchema } from '../../../entities/player.entity';
 import { Partnership, PartnershipSchema } from '../../../entities/partnership.entity';
+import { Team, TeamSchema } from '../../../entities/team.entity';
 import { RedisPublisherService } from '../../../common/redis/redis-publisher.service';
 import { CommentaryGeneratorService } from '../services/commentary-generator.service';
 
@@ -26,6 +27,7 @@ import { CommentaryGeneratorService } from '../services/commentary-generator.ser
             { name: OverSummary.name, schema: OverSummarySchema },
             { name: Player.name, schema: PlayerSchema },
             { name: Partnership.name, schema: PartnershipSchema },
+            { name: Team.name, schema: TeamSchema },
         ]),
     ],
     providers: [ScoreEngineService, RedisPublisherService, CommentaryGeneratorService],

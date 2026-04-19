@@ -9,9 +9,17 @@ import { Inning, InningDocument } from '../../../entities/inning.entity';
 import { BattingScorecard, BattingScorecardDocument } from '../../../entities/batting-scorecard.entity';
 import { BowlingScorecard, BowlingScorecardDocument } from '../../../entities/bowling-scorecard.entity';
 import { OverSummary, OverSummaryDocument } from '../../../entities/over-summary.entity';
-import { RedisPublisherService, MatchUpdatePayload } from '../../../common/redis/redis-publisher.service';
+import {
+  RedisPublisherService,
+  MatchUpdatePayload,
+  ListingUpdatePayload,
+  ScorecardDeltaPayload,
+  CommentaryPayload,
+  TeamMeta,
+} from '../../../common/redis/redis-publisher.service';
 import { CommentaryGeneratorService } from '../services/commentary-generator.service';
 import { Player } from '../../../entities/player.entity';
+import { Team, TeamDocument } from '../../../entities/team.entity';
 import { Partnership, PartnershipDocument } from '../../../entities/partnership.entity';
 
 @Injectable()
@@ -26,6 +34,7 @@ export class ScoreEngineService {
         @InjectModel(BowlingScorecard.name) private bowlingModel: Model<BowlingScorecardDocument>,
         @InjectModel(OverSummary.name) private overSummaryModel: Model<OverSummaryDocument>,
         @InjectModel(Partnership.name) private partnershipModel: Model<PartnershipDocument>,
+        @InjectModel(Team.name) private teamModel: Model<TeamDocument>,
         private redisPublisher: RedisPublisherService,
         private commentaryGenerator: CommentaryGeneratorService,
     ) { }
@@ -331,11 +340,13 @@ export class ScoreEngineService {
         }).exec();
         if (!inning) throw new NotFoundException('Active Inning not found');
 
-        // Get current players from BattingScorecard and BowlingScorecard using Inning IDs
-        const [striker, nonStriker, bowler] = await Promise.all([
+        // Get current players + teams in parallel
+        const [striker, nonStriker, bowler, teamA, teamB] = await Promise.all([
             inning.currentStrikerId ? this.battingModel.findOne({ matchId, inningId: inning._id, playerId: inning.currentStrikerId }).populate('playerId', 'name').exec() : null,
             inning.currentNonStrikerId ? this.battingModel.findOne({ matchId, inningId: inning._id, playerId: inning.currentNonStrikerId }).populate('playerId', 'name').exec() : null,
-            inning.currentBowlerId ? this.bowlingModel.findOne({ matchId, inningId: inning._id, playerId: inning.currentBowlerId }).populate('playerId', 'name').exec() : null
+            inning.currentBowlerId ? this.bowlingModel.findOne({ matchId, inningId: inning._id, playerId: inning.currentBowlerId }).populate('playerId', 'name').exec() : null,
+            this.teamModel.findById(match.teamAId).select('name shortName code').exec(),
+            this.teamModel.findById(match.teamBId).select('name shortName code').exec(),
         ]);
 
         return {
@@ -344,7 +355,9 @@ export class ScoreEngineService {
             striker: striker as any,
             nonStriker: nonStriker as any,
             bowler: bowler as any,
-            currentOverBalls: []
+            currentOverBalls: [],
+            teamA: teamA as any,
+            teamB: teamB as any,
         };
     }
 
@@ -707,15 +720,15 @@ export class ScoreEngineService {
         // that were active at the time of the event.
         if (snapshot.striker && (!currentState.striker || currentState.striker._id.toString() !== snapshot.striker._id.toString())) {
             this.logger.log(`[UNDO] Recovering striker from snapshot: ${snapshot.striker._id}`);
-            currentState.striker = await this.battingModel.findById(snapshot.striker._id);
+            currentState.striker = await this.battingModel.findById(snapshot.striker._id).populate('playerId', 'name');
         }
         if (snapshot.nonStriker && (!currentState.nonStriker || currentState.nonStriker._id.toString() !== snapshot.nonStriker._id.toString())) {
             this.logger.log(`[UNDO] Recovering non-striker from snapshot: ${snapshot.nonStriker._id}`);
-            currentState.nonStriker = await this.battingModel.findById(snapshot.nonStriker._id);
+            currentState.nonStriker = await this.battingModel.findById(snapshot.nonStriker._id).populate('playerId', 'name');
         }
         if (snapshot.bowler && (!currentState.bowler || currentState.bowler._id.toString() !== snapshot.bowler._id.toString())) {
             this.logger.log(`[UNDO] Recovering bowler from snapshot: ${snapshot.bowler._id}`);
-            currentState.bowler = await this.bowlingModel.findById(snapshot.bowler._id);
+            currentState.bowler = await this.bowlingModel.findById(snapshot.bowler._id).populate('playerId', 'name');
         }
 
         // Restore inning fields from the snapshot to ensure UI consistency (e.g. requiresWicketSelection)
@@ -732,7 +745,10 @@ export class ScoreEngineService {
 
         // Save the reversed state
         await this.persistState(currentState, event);
+        
+        // Broadcast both match update and full scorecard delta to ensure UI sync
         await this.publishMatchReset(matchId, currentState);
+        await this.publishScorecardDelta(matchId, currentState);
 
         // Delete the history entry
         await this.scoreHistoryModel.findByIdAndDelete(lastHistory._id);
@@ -947,6 +963,7 @@ export class ScoreEngineService {
 
         // Simpler: Just find the summary for the current over (or previous if empty? No).
         // Safest: Use the current over index from state.
+        // 6.0 completed (36 balls). If we undo wide, totalBalls stays 37? No.
         const ballsPerOver = state.match.ballsPerOver || 6;
         const currentOver = Math.floor(state.inning.totalBalls / ballsPerOver) + 1;
         // Wait, if we undid the last ball of over 5, totalBalls is now over 4's end.
@@ -1078,7 +1095,7 @@ export class ScoreEngineService {
         if (!lastBall) return;
 
         const ballsPerOver = state.match.ballsPerOver || 6;
-        const currentOver = Math.ceil(inning.totalBalls / ballsPerOver) || 1;
+        const currentOver = Math.floor(inning.totalBalls / ballsPerOver) + 1;
         const isComposite = (event as any).isComposite;
 
         // Get ball label
@@ -1255,58 +1272,346 @@ export class ScoreEngineService {
         await overSummary.save();
     }
 
-    private async publishMatchUpdate(matchId: string, state: MatchState, event: BallEvent): Promise<void> {
-        const payload: MatchUpdatePayload = {
+    // ─── Helpers for building publish payloads ───────────────────────────────
+
+    private buildTeamMeta(team: any, inningBattingFor: boolean, state: MatchState): TeamMeta {
+        const score = inningBattingFor
+            ? `${state.inning.totalRuns}/${state.inning.totalWickets}`
+            : '—/—';
+        const balls = state.inning.totalBalls;
+        const overs = inningBattingFor
+            ? `${Math.floor(balls / 6)}.${balls % 6}`
+            : '—';
+        return {
+            teamId: team?._id?.toString() || '',
+            name: team?.name || 'Team',
+            code: team?.code || team?.shortName || '',
+            score,
+            overs,
+        };
+    }
+
+    private buildBallLabel(event: BallEvent, state: MatchState): string {
+        const lastOverBall = state.currentOverBalls[state.currentOverBalls.length - 1];
+        if (!lastOverBall) return (event as any).originalEvent || event.type;
+        if (lastOverBall.isWicket && !lastOverBall.isWide && !lastOverBall.isNoBall) return 'W';
+        if (lastOverBall.isWide) return lastOverBall.extras > 1 ? `wd+${lastOverBall.extras - 1}` : 'wd';
+        if (lastOverBall.isNoBall) return lastOverBall.runs > 0 ? `nb+${lastOverBall.runs}` : 'nb';
+        return lastOverBall.runs > 0 ? String(lastOverBall.runs) : '•';
+    }
+
+    /** Whether teamA is currently batting (determines which inning data to attach) */
+    private teamAIsBatting(state: MatchState): boolean {
+        const battingTeamId = (state.inning as any).battingTeamId?.toString();
+        return battingTeamId === state.match.teamAId?.toString();
+    }
+
+    // ─── Core publish methods ────────────────────────────────────────────────
+
+    private async buildMatchUpdatePayload(matchId: string, state: MatchState, type: any, currentBall: string, lastBall?: any): Promise<MatchUpdatePayload> {
+        const ballsPerOver = state.match.ballsPerOver || 6;
+        const totalBalls = state.inning.totalBalls;
+        const oversValue = Math.floor(totalBalls / ballsPerOver) + (totalBalls % ballsPerOver) / 10;
+        const runRate = totalBalls > 0 ? (state.inning.totalRuns / totalBalls) * ballsPerOver : 0;
+
+        const teamABatting = this.teamAIsBatting(state);
+        const teamAMeta: TeamMeta = teamABatting
+            ? this.buildTeamMeta(state.teamA, true, state)
+            : { teamId: state.teamA?._id?.toString() || '', name: state.teamA?.name || 'Team A', code: state.teamA?.shortName || '', score: '—/—', overs: '—' };
+        const teamBMeta: TeamMeta = !teamABatting
+            ? this.buildTeamMeta(state.teamB, true, state)
+            : { teamId: state.teamB?._id?.toString() || '', name: state.teamB?.name || 'Team B', code: state.teamB?.shortName || '', score: '—/—', overs: '—' };
+
+        const recentBalls = await this.getRecentBalls(matchId, state.inning._id.toString(), ballsPerOver);
+
+        return {
             matchId,
-            type: event.type === 'WICKET' ? 'WICKET' : event.type === 'OVER_END' ? 'OVER_END' : 'BALL',
+            type,
             timestamp: new Date(),
+            
+            // Root-level fields for scoreUpdate (Socket.io event name)
+            score: `${state.inning.totalRuns}/${state.inning.totalWickets}`,
+            overs: oversValue.toString(),
+            runRate: Number(runRate.toFixed(2)),
+            currentInning: state.inning.inningNumber,
+            currentBall: currentBall || '0',
+            recentBalls,
+
+            // Standardized player IDs for UI highlights
+            currentStrikerId: this.extractId(state.striker?.playerId),
+            currentNonStrikerId: this.extractId(state.nonStriker?.playerId),
+            currentBowlerId: this.extractId(state.bowler?.playerId),
+
             inning: {
                 number: state.inning.inningNumber,
                 totalRuns: state.inning.totalRuns,
                 totalBalls: state.inning.totalBalls,
                 wickets: state.inning.totalWickets,
-                overs: Math.floor(state.inning.totalBalls / 6) + (state.inning.totalBalls % 6) / 10,
-                runRate: state.inning.totalBalls > 0 ? (state.inning.totalRuns / state.inning.totalBalls) * 6 : 0
+                overs: oversValue,
+                runRate,
+                extras: state.inning.extras || 0,
             },
             striker: state.striker ? {
-                playerId: state.striker.playerId.toString(),
+                playerId: this.extractId(state.striker.playerId),
+                name: (state.striker.playerId as any)?.name || '',
                 runs: state.striker.runs,
                 balls: state.striker.balls,
-                strikeRate: state.striker.strikeRate
+                fours: state.striker.fours || 0,
+                sixes: state.striker.sixes || 0,
+                strikeRate: state.striker.strikeRate,
+            } : undefined,
+            nonStriker: state.nonStriker ? {
+                playerId: this.extractId(state.nonStriker.playerId),
+                name: (state.nonStriker.playerId as any)?.name || '',
+                runs: state.nonStriker.runs,
+                balls: state.nonStriker.balls,
             } : undefined,
             bowler: state.bowler ? {
-                playerId: state.bowler.playerId.toString(),
+                playerId: this.extractId(state.bowler.playerId),
+                name: (state.bowler.playerId as any)?.name || '',
                 overs: state.bowler.overs,
                 runs: state.bowler.runs,
                 wickets: state.bowler.wickets,
-                economy: state.bowler.economy
+                economy: state.bowler.economy,
             } : undefined,
-            lastBall: {
+            lastBall,
+            teamA: teamAMeta,
+            teamB: teamBMeta,
+        };
+    }
+
+    private async publishMatchUpdate(matchId: string, state: MatchState, event: BallEvent): Promise<void> {
+        try {
+            const ballLabel = this.buildBallLabel(event, state);
+            this.logger.warn(`[ScoreEngine] Emitting scoreUpdate for ${matchId} (Score: ${state.inning.totalRuns}/${state.inning.totalWickets})`);
+
+            const type = event.type === 'UNDO' ? 'BALL' : (event.type === 'WICKET' ? 'WICKET' : event.type === 'OVER_END' ? 'OVER_END' : 'BALL');
+            const currentBall = state.inning.currentBall || '0';
+            const lastBall = {
                 runs: event.runs || 0,
                 extras: event.extras || 0,
                 isWicket: event.type === 'WICKET',
-                ballType: event.type
-            }
-        };
+                ballType: event.type,
+                ballLabel,
+            };
 
-        await this.redisPublisher.publishMatchUpdate(payload);
+            const payload = await this.buildMatchUpdatePayload(matchId, state, type, currentBall, lastBall);
+
+            await this.redisPublisher.publishMatchUpdate(payload);
+
+            // Also push a lightweight listing update
+            const listingPayload: ListingUpdatePayload = {
+                matchId,
+                teamA: payload.teamA,
+                teamB: payload.teamB,
+                status: state.match.status,
+                currentInning: state.inning.inningNumber,
+                runRate: payload.runRate || 0,
+                lastBallLabel: ballLabel,
+                timestamp: new Date(),
+            };
+            await this.redisPublisher.publishListingUpdate(listingPayload);
+
+            // Push scorecard delta
+            await this.publishScorecardDelta(matchId, state);
+
+        } catch (err) {
+            this.logger.error('publishMatchUpdate error:', err);
+        }
+    }
+
+    private async publishScorecardDelta(matchId: string, state: MatchState): Promise<void> {
+        try {
+            const [allBatters, allBowlers] = await Promise.all([
+                this.battingModel.find({ matchId, inningId: state.inning._id }).populate('playerId', 'name').exec(),
+                this.bowlingModel.find({ matchId, inningId: state.inning._id }).populate('playerId', 'name').exec(),
+            ]);
+
+            const batting = allBatters.map((b: any) => ({
+                playerId: this.extractId(b.playerId),
+                name: b.playerId?.name || '',
+                runs: b.runs,
+                balls: b.balls,
+                fours: b.fours || 0,
+                sixes: b.sixes || 0,
+                strikeRate: b.strikeRate || 0,
+                isOut: b.isOut || false,
+                dismissalText: b.dismissalText || undefined,
+                isOnStrike: this.extractId(state.striker?.playerId) === this.extractId(b.playerId),
+            }));
+
+            const bowling = allBowlers.map((b: any) => ({
+                playerId: this.extractId(b.playerId),
+                name: b.playerId?.name || '',
+                overs: b.overs,
+                runs: b.runs,
+                wickets: b.wickets,
+                economy: b.economy || 0,
+                isCurrent: this.extractId(state.bowler?.playerId) === this.extractId(b.playerId),
+            }));
+
+            const payload: ScorecardDeltaPayload = {
+                matchId,
+                inningNumber: state.inning.inningNumber,
+                batting,
+                bowling,
+                extras: {
+                    wides: state.inning.wides || 0,
+                    noBalls: state.inning.noBalls || 0,
+                    byes: state.inning.byes || 0,
+                    legByes: state.inning.legByes || 0,
+                    penalties: state.inning.penalties || 0,
+                    total: state.inning.extras || 0,
+                },
+                totalRuns: state.inning.totalRuns,
+                wickets: state.inning.totalWickets,
+                timestamp: new Date(),
+            };
+
+            await this.redisPublisher.publishScorecardDelta(payload);
+        } catch (err) {
+            this.logger.error('publishScorecardDelta error:', err);
+        }
     }
 
     private async publishMatchReset(matchId: string, state: MatchState): Promise<void> {
-        const payload: MatchUpdatePayload = {
-            matchId,
-            type: 'MATCH_RESET',
-            timestamp: new Date(),
-            inning: {
-                number: state.inning.inningNumber,
-                totalRuns: state.inning.totalRuns,
-                totalBalls: state.inning.totalBalls,
-                wickets: state.inning.totalWickets,
-                overs: Math.floor(state.inning.totalBalls / 6) + (state.inning.totalBalls % 6) / 10,
-                runRate: state.inning.totalBalls > 0 ? (state.inning.totalRuns / state.inning.totalBalls) * 6 : 0
-            }
-        };
+        try {
+            const payload = await this.buildMatchUpdatePayload(matchId, state, 'BALL', 'confirming');
 
-        await this.redisPublisher.publishMatchUpdate(payload);
+            await this.redisPublisher.publishMatchUpdate(payload);
+
+            // Listing update after reset
+            await this.redisPublisher.publishListingUpdate({
+                matchId,
+                teamA: payload.teamA,
+                teamB: payload.teamB,
+                status: state.match.status,
+                currentInning: state.inning.inningNumber,
+                runRate: payload.runRate || 0,
+                lastBallLabel: 'undo',
+                timestamp: new Date(),
+            });
+        } catch (err) {
+            this.logger.error('publishMatchReset error:', err);
+        }
     }
-}
+
+    /**
+     * Fetches the last 3 overs and any live balls for a match/inning.
+     * Used for the "Recent Balls" strip on the UI.
+     */
+    public async getRecentBalls(matchId: string, inningId: string, ballsPerOver: number = 6): Promise<any[]> {
+        try {
+            // Fetch last 3 overs for recent balls strip
+            const lastOvers = await this.overSummaryModel
+                .find({
+                    matchId: new Types.ObjectId(matchId),
+                    inningId: new Types.ObjectId(inningId),
+                })
+                .sort({ overNumber: -1 })
+                .limit(3)
+                .lean();
+
+            // Flatten balls (reverse to ascending order, then map)
+            const recentBalls = lastOvers
+                .reverse()
+                .flatMap(over => {
+                    const items = [];
+
+                    // Add over start marker
+                    items.push({
+                        ballId: `start_${over.overNumber}`,
+                        type: 'over_start',
+                        overNumber: over.overNumber
+                    } as any);
+
+                    // Add balls
+                    (over.ballsData || []).forEach((ball, bIdx) => {
+                        items.push({
+                            ...ball,
+                            ballId: `ball_${over.overNumber}_${bIdx}`,
+                            overNumber: over.overNumber,
+                            type: 'ball'
+                        });
+                    });
+
+                    // Add over summary after each over
+                    if (items.length > 0) {
+                        items.push({
+                            ballId: `summary_${over.overNumber}`,
+                            type: 'over_summary',
+                            overNumber: over.overNumber,
+                            runs: over.runs,
+                            wickets: over.wickets
+                        } as any);
+                    }
+                    return items;
+                });
+
+            // Add current "live" balls from ScoreHistory (not yet summarized)
+            const lastSummarizedOver = lastOvers.length > 0 ? lastOvers[lastOvers.length - 1].overNumber : 0;
+
+            // Fetch scoring events for the current over
+            const currentOverEvents = await this.scoreHistoryModel.find({
+                matchId: new Types.ObjectId(matchId),
+                inningId: new Types.ObjectId(inningId),
+            }).sort({ ballNumber: 1 }).lean();
+
+            // Filter for events after the last completed over
+            const liveEvents = currentOverEvents.filter(hist => {
+                const ballOverNum = Math.floor((hist.ballNumber - 1) / ballsPerOver) + 1;
+                return ballOverNum > lastSummarizedOver;
+            });
+
+            if (liveEvents.length > 0) {
+                // If we transitioned to a new over, add a header
+                const firstLiveOver = Math.floor((liveEvents[0].ballNumber - 1) / ballsPerOver) + 1;
+                if (recentBalls.length === 0 || lastSummarizedOver < firstLiveOver) {
+                    recentBalls.push({
+                        ballId: `start_${firstLiveOver}`,
+                        type: 'over_start',
+                        overNumber: firstLiveOver
+                    } as any);
+                }
+
+                liveEvents.forEach((hist, lIdx) => {
+                    const ev = hist.event;
+                    if (ev.type === 'OVER_END') return;
+
+                    recentBalls.push({
+                        ballId: `live_${hist.ballNumber}_${lIdx}`, // Using ballNumber for stability
+                        ballLabel: ev.ballLabel || ev.runs?.toString() || '0',
+                        runs: ev.runs || 0,
+                        isWicket: ev.type === 'WICKET',
+                        isExtra: ['WIDE', 'NO_BALL', 'BYE', 'LEG_BYE'].includes(ev.type),
+                        extraType: ev.type,
+                        overNumber: Math.floor((hist.ballNumber - 1) / ballsPerOver) + 1,
+                        type: 'ball'
+                    });
+                });
+            }
+
+            return recentBalls;
+        } catch (error) {
+            this.logger.error('getRecentBalls error:', error);
+            return [];
+        }
+    }
+
+    private extractId(input: any): string {
+        if (!input) return '';
+        
+        // Handle Mongoose objects directly if possible
+        if (typeof input === 'object' && input._id) {
+            return input._id.toString();
+        }
+
+        const str = String(input);
+        // Aggressively search for a 24-character hex string (ObjectId format)
+        const match = str.match(/[0-9a-fA-F]{24}/);
+        if (match) return match[0];
+
+        // Fallback for non-ObjectId strings
+        return typeof input === 'string' ? input : '';
+    }
+}

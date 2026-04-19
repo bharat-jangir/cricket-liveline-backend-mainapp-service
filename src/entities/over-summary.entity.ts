@@ -66,6 +66,14 @@ export class OverSummary {
     isLegal: boolean;
     type: 'ball' | 'wicket' | 'milestone' | 'over_end' | 'innings_summary';
 
+    // Ball Stats
+    runs?: number;
+    extras?: number;
+    isWide?: boolean;
+    isNoBall?: boolean;
+    isWicket?: boolean;
+    wicketType?: string;
+
     // Player Information
     bowlerId?: Types.ObjectId;
     bowlerName?: string;

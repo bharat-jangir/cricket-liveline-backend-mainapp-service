@@ -52,10 +52,12 @@ export class LiveMatchController {
     }
   }
 
+  @Get(':matchId/live-status')
   @MessagePattern('live-match.getStatus')
-  async getLiveStatus(@Payload() matchId: string) {
+  async getLiveStatus(@Param('matchId') matchId: string, @Payload() payload: any) {
     try {
-      const result = await this.liveMatchService.getLiveStatus(matchId);
+      const mid = matchId || payload;
+      const result = await this.liveMatchService.getLiveStatus(mid);
       // Return the service response as-is (contains data.result structure)
       return result;
     } catch (error: any) {
@@ -612,10 +614,12 @@ export class LiveMatchController {
     }
   }
 
+  @Get(':matchId/commentary')
   @MessagePattern('live-match.getCommentary')
-  async getCommentary(@Payload() payload: { matchId: string; inningId?: string }) {
+  async getCommentary(@Param('matchId') matchId: string, @Payload() payload: any) {
     try {
-      const result = await this.liveMatchService.getMatchCommentary(payload.matchId, payload.inningId);
+      const mid = matchId || payload.matchId || payload;
+      const result = await this.liveMatchService.getMatchCommentary(mid, payload.inningId);
       return result;
     } catch (error: any) {
       this.logger.error('Error in getCommentary', error.stack || error.message || error);

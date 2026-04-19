@@ -195,6 +195,7 @@ export class Team extends Document {
 }
 
 export const TeamSchema = SchemaFactory.createForClass(Team);
+export type TeamDocument = Team & Document;
 
 
 TeamSchema.index({ name: 1 });

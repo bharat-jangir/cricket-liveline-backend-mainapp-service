@@ -109,6 +109,10 @@ export class UpdateLiveStatusDto {
   powerPlay?: boolean;
 
   @IsOptional()
+  @IsString()
+  powerplayOvers?: string;
+
+  @IsOptional()
   isMatchNew?: boolean;
 
   @IsOptional()

@@ -20,6 +20,8 @@ import { LiveMatchSession } from '../../entities/live-match-session.entity';
 import { Partnership } from '../../entities/partnership.entity';
 import { ScoreHistory } from '../../entities/score-history.entity';
 import { ResponseService, IResponseWithStatusCode } from '../../common/services/response.service';
+import { RedisPublisherService } from '../../common/redis/redis-publisher.service';
+import { ScoreEngineService } from './score-engine/score-engine.service';
 
 @Injectable()
 export class LiveMatchService {
@@ -37,6 +39,8 @@ export class LiveMatchService {
     @InjectModel(ScoreHistory.name) private scoreHistoryModel: Model<ScoreHistory>,
     @InjectConnection() private readonly connection: Connection,
     private readonly responseService: ResponseService,
+    private readonly redisPublisher: RedisPublisherService,
+    private readonly scoreEngineService: ScoreEngineService,
   ) { }
 
   /**
@@ -960,14 +964,55 @@ export class LiveMatchService {
         }
 
         if (Object.keys(inningUpdate).length > 0) {
-          // Update the current inning (either the one set at start or updated via currentInning)
-          // If currentInning was updated in DTO, we already updated match.currentInning and currentInningNum
-
           await this.inningModel.findOneAndUpdate(
             { matchId: matchObjectId, inningNumber: currentInningNum },
             { $set: inningUpdate },
             { session: s, upsert: true }
           );
+        }
+
+        // ── Real-time Specialized Emitters ───────────────────────────────────────
+        
+        // 1. Inning Change
+        if (updateDto.currentInning !== undefined && updateDto.currentInning !== originalInningNum) {
+          await this.redisPublisher.publishInningChange({
+            matchId,
+            inningNumber: updateDto.currentInning,
+            battingTeamId: inningUpdate.battingTeamId?.toString() || updateDto.battingTeamId || '',
+            bowlingTeamId: inningUpdate.bowlingTeamId?.toString() || updateDto.bowlingTeamId || '',
+            timestamp: new Date()
+          });
+        }
+
+        // 2. Odds / Session / Lambi Update
+        const hasOddsUpdate = [
+          'oddsTeam', 'oddsBlue', 'oddsRed', 'session', 'sessionBlue', 'sessionRed', 'lambi', 'lambiBlue', 'lambiRed'
+        ].some(field => updateDto[field] !== undefined);
+
+        if (hasOddsUpdate) {
+          await this.redisPublisher.publishOddsSession({
+            matchId,
+            oddsTeam: updateDto.oddsTeam,
+            oddsBlue: updateDto.oddsBlue,
+            oddsRed: updateDto.oddsRed,
+            session: updateDto.session,
+            sessionBlue: updateDto.sessionBlue,
+            sessionRed: updateDto.sessionRed,
+            lambi: updateDto.lambi,
+            lambiBlue: updateDto.lambiBlue,
+            lambiRed: updateDto.lambiRed,
+            timestamp: new Date()
+          });
+        }
+
+        // 3. Powerplay / Flags Update
+        if (updateDto.onOC !== undefined || updateDto.powerplayOvers !== undefined) {
+          await this.redisPublisher.publishPowerplayUpdate({
+            matchId,
+            onOC: updateDto.onOC,
+            powerplayOvers: updateDto.powerplayOvers,
+            timestamp: new Date()
+          });
         }
 
         // 4. Return updated status (reuse getLiveStatus logic or construct manually)
