@@ -232,8 +232,11 @@ export class RedisPublisherService implements OnModuleDestroy {
   /** Publish full match update to the per-match channel */
   async publishMatchUpdate(payload: MatchUpdatePayload): Promise<void> {
     try {
-      const channel = `match:${payload.matchId}:ball`;
-      await this.client.publish(channel, JSON.stringify(payload));
+      const channel = `match:${payload.matchId.toString()}:ball`;
+      await this.client.publish(channel, JSON.stringify({
+        ...payload,
+        matchId: payload.matchId.toString()
+      }));
       this.logger.debug(`Published to ${channel}: ${payload.type}`);
     } catch (error) {
       this.logger.error('Failed to publish match update:', error);
@@ -244,7 +247,10 @@ export class RedisPublisherService implements OnModuleDestroy {
   async publishListingUpdate(payload: ListingUpdatePayload): Promise<void> {
     try {
       const channel = 'live-match:listing';
-      await this.client.publish(channel, JSON.stringify(payload));
+      await this.client.publish(channel, JSON.stringify({
+        ...payload,
+        matchId: payload.matchId.toString()
+      }));
       this.logger.debug(`Published listing update for match ${payload.matchId}`);
     } catch (error) {
       this.logger.error('Failed to publish listing update:', error);
@@ -254,8 +260,11 @@ export class RedisPublisherService implements OnModuleDestroy {
   /** Publish scorecard delta for the per-match detail channel */
   async publishScorecardDelta(payload: ScorecardDeltaPayload): Promise<void> {
     try {
-      const channel = `match:${payload.matchId}:scorecard`;
-      await this.client.publish(channel, JSON.stringify(payload));
+      const channel = `match:${payload.matchId.toString()}:scorecard`;
+      await this.client.publish(channel, JSON.stringify({
+        ...payload,
+        matchId: payload.matchId.toString()
+      }));
       this.logger.debug(`Published scorecard delta for match ${payload.matchId}`);
     } catch (error) {
       this.logger.error('Failed to publish scorecard delta:', error);
@@ -265,8 +274,11 @@ export class RedisPublisherService implements OnModuleDestroy {
   /** Publish a single-ball commentary entry */
   async publishCommentary(payload: CommentaryPayload): Promise<void> {
     try {
-      const channel = `match:${payload.matchId}:commentary`;
-      await this.client.publish(channel, JSON.stringify(payload));
+      const channel = `match:${payload.matchId.toString()}:commentary`;
+      await this.client.publish(channel, JSON.stringify({
+        ...payload,
+        matchId: payload.matchId.toString()
+      }));
       this.logger.debug(`Published commentary for match ${payload.matchId}`);
     } catch (error) {
       this.logger.error('Failed to publish commentary:', error);
@@ -279,8 +291,11 @@ export class RedisPublisherService implements OnModuleDestroy {
 
   async publishInningChange(payload: InningChangePayload): Promise<void> {
     try {
-      const channel = `match:${payload.matchId}:inning`;
-      await this.client.publish(channel, JSON.stringify(payload));
+      const channel = `match:${payload.matchId.toString()}:inning`;
+      await this.client.publish(channel, JSON.stringify({
+        ...payload,
+        matchId: payload.matchId.toString()
+      }));
       this.logger.log(`Published inning change for match ${payload.matchId} to Inning ${payload.inningNumber}`);
     } catch (error) {
       this.logger.error('Failed to publish inning change:', error);
@@ -289,8 +304,11 @@ export class RedisPublisherService implements OnModuleDestroy {
 
   async publishOddsSession(payload: OddsSessionPayload): Promise<void> {
     try {
-      const channel = `match:${payload.matchId}:odds`;
-      await this.client.publish(channel, JSON.stringify(payload));
+      const channel = `match:${payload.matchId.toString()}:odds`;
+      await this.client.publish(channel, JSON.stringify({
+        ...payload,
+        matchId: payload.matchId.toString()
+      }));
       this.logger.debug(`Published odds/session update for match ${payload.matchId}`);
     } catch (error) {
       this.logger.error('Failed to publish odds/session update:', error);
@@ -299,8 +317,11 @@ export class RedisPublisherService implements OnModuleDestroy {
 
   async publishPowerplayUpdate(payload: PowerplayUpdatePayload): Promise<void> {
     try {
-      const channel = `match:${payload.matchId}:powerplay`;
-      await this.client.publish(channel, JSON.stringify(payload));
+      const channel = `match:${payload.matchId.toString()}:powerplay`;
+      await this.client.publish(channel, JSON.stringify({
+        ...payload,
+        matchId: payload.matchId.toString()
+      }));
       this.logger.debug(`Published powerplay update for match ${payload.matchId}`);
     } catch (error) {
       this.logger.error('Failed to publish powerplay update:', error);

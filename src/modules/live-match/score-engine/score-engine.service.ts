@@ -1444,10 +1444,12 @@ export class ScoreEngineService {
                 playerId: this.extractId(b.playerId),
                 name: b.playerId?.name || '',
                 overs: b.overs,
+                maidens: b.maidens || 0,
                 runs: b.runs,
                 wickets: b.wickets,
                 economy: b.economy || 0,
-                isCurrent: this.extractId(state.bowler?.playerId) === this.extractId(b.playerId),
+                isCurrentBowler: this.extractId(state.bowler?.playerId) === this.extractId(b.playerId),
+                isCurrent: this.extractId(state.bowler?.playerId) === this.extractId(b.playerId), // Backward compatibility
             }));
 
             const payload: ScorecardDeltaPayload = {
