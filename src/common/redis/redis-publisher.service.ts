@@ -29,6 +29,7 @@ export interface MatchUpdatePayload {
   runRate?: number;
   currentBall?: string;
   currentInning?: number;
+  powerPlay?: boolean;
   
   currentStrikerId?: string;
   currentNonStrikerId?: string;
@@ -180,6 +181,7 @@ export interface OddsSessionPayload {
 export interface PowerplayUpdatePayload {
   matchId: string;
   powerplayOvers?: string;
+  powerPlay?: boolean;
   onOC?: boolean;
   timestamp: Date;
 }

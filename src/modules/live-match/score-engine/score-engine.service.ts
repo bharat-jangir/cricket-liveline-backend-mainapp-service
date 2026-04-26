@@ -132,13 +132,13 @@ export class ScoreEngineService {
                         const batterRuns = (event.type === 'BYE' || event.type === 'LEG_BYE') ? 0 : runsScored;
                         partnership.batsman1Runs += batterRuns;
                     }
-                    if (isLegalBall || isNoBall) partnership.batsman1Balls += 1;
+                    if (isLegalBall) partnership.batsman1Balls += 1;
                 } else if (b2IdStr === strikerIdStr) {
                     if (!isWide && event.type !== 'PENALTY') {
                         const batterRuns = (event.type === 'BYE' || event.type === 'LEG_BYE') ? 0 : runsScored;
                         partnership.batsman2Runs += batterRuns;
                     }
-                    if (isLegalBall || isNoBall) partnership.batsman2Balls += 1;
+                    if (isLegalBall) partnership.batsman2Balls += 1;
                 }
 
                 // Match fixed IDs with current striker/non-striker to sync UI fields
@@ -204,13 +204,13 @@ export class ScoreEngineService {
                             const batterRuns = (event.type === 'BYE' || event.type === 'LEG_BYE') ? 0 : runsScored;
                             partnership.batsman1Runs = Math.max(0, partnership.batsman1Runs - batterRuns);
                         }
-                        if (isLegalBall || isNoBall) partnership.batsman1Balls = Math.max(0, partnership.batsman1Balls - 1);
+                        if (isLegalBall) partnership.batsman1Balls = Math.max(0, partnership.batsman1Balls - 1);
                     } else if (b2IdStr === strikerIdStr) {
                         if (!isWide && event.type !== 'PENALTY' && !isWicket) {
                             const batterRuns = (event.type === 'BYE' || event.type === 'LEG_BYE') ? 0 : runsScored;
                             partnership.batsman2Runs = Math.max(0, partnership.batsman2Runs - batterRuns);
                         }
-                        if (isLegalBall || isNoBall) partnership.batsman2Balls = Math.max(0, partnership.batsman2Balls - 1);
+                        if (isLegalBall) partnership.batsman2Balls = Math.max(0, partnership.batsman2Balls - 1);
                     }
                 }
 
@@ -242,8 +242,13 @@ export class ScoreEngineService {
                     partnership.obBall = b2.balls.toString();
                 }
                 partnership.score = `${inning.totalRuns}/${inning.totalWickets}`;
-
-                await partnership.save();
+                
+                // If we undid the start of a partnership (it's now empty), delete it
+                if (partnership.totalBalls === 0 && partnership.totalRuns === 0 && !isWicket && wicketNumber > 1) {
+                    await this.partnershipModel.findByIdAndDelete(partnership._id);
+                } else {
+                    await partnership.save();
+                }
             }
         } catch (error) {
             this.logger.error(`Error reversing partnership: ${error.message}`);
@@ -330,7 +335,10 @@ export class ScoreEngineService {
         return new Types.ObjectId(id);
     }
 
-    private async loadState(matchId: Types.ObjectId): Promise<MatchState> {
+    /**
+     * Loads the current match state from the database
+     */
+    public async loadState(matchId: Types.ObjectId): Promise<MatchState> {
         const match = await this.matchModel.findById(matchId).exec();
         if (!match) throw new NotFoundException('Match not found');
 
@@ -409,7 +417,7 @@ export class ScoreEngineService {
                 if (runsScored === 4) striker.fours += 1;
                 if (runsScored === 6) striker.sixes += 1;
             }
-            if (isLegalBall || isNoBall) {
+            if (isLegalBall) {
                 striker.balls += 1;
                 striker.strikeRate = striker.balls > 0 ? (striker.runs / striker.balls) * 100 : 0;
             }
@@ -506,9 +514,9 @@ export class ScoreEngineService {
                 throw new BadRequestException(`Inning is already All Out (${inning.totalWickets} wickets). Cannot process another wicket.`);
             }
 
-            // Only count balls for legal deliveries and no-balls (not wides)
+            // Only count balls for legal deliveries
             // Skip ball increment if this is a composite event (already counted in previous trigger event)
-            if (!isComposite && (isLegalBall || isNoBall)) {
+            if (!isComposite && isLegalBall) {
                 striker.balls += 1;
                 striker.strikeRate = striker.balls > 0 ? (striker.runs / striker.balls) * 100 : 0;
             }
@@ -867,12 +875,16 @@ export class ScoreEngineService {
             // 3. Reverse Striker Updates
             if (state.striker && !isWide && !isPenalty) {
                 const striker = state.striker;
-                if (!isBye && !isLegBye && !isWicket) {
+                const isComposite = (event as any).isComposite;
+                if (!isBye && !isLegBye && !isWicket && !isComposite) {
                     striker.runs = Math.max(0, striker.runs - runsScored);
                     if (runsScored === 4) striker.fours = Math.max(0, striker.fours - 1);
                     if (runsScored === 6) striker.sixes = Math.max(0, striker.sixes - 1);
                 }
-                if (isLegalBall || isNoBall) {
+                
+                // Both No Balls and Wides do not count as a ball faced for the striker in this implementation
+                // Also skip ball decrement if this is a composite event (already handled by parent)
+                if (isLegalBall && !isComposite) {
                     striker.balls = Math.max(0, striker.balls - 1);
                     striker.strikeRate = striker.balls > 0 ? (striker.runs / striker.balls) * 100 : 0;
                 }
@@ -1051,7 +1063,16 @@ export class ScoreEngineService {
                 overSummary.wickets = Math.max(0, overSummary.wickets - 1);
             }
 
-            overSummary.isMaiden = overSummary.runs === 0 && overSummary.wickets === 0;
+            const wasMaiden = overSummary.isMaiden;
+            overSummary.isMaiden = overSummary.runs === 0;
+            
+            // If the over was a maiden and now its not, or it was deleted, decrement bowler maidens
+            if (wasMaiden && (!overSummary.isMaiden || overSummary.ballsData.length === 0)) {
+                if (state.bowler) {
+                    state.bowler.maidens = Math.max(0, state.bowler.maidens - 1);
+                }
+            }
+
             overSummary.markModified('ballsData');
 
             if (overSummary.ballsData.length === 0) {
@@ -1175,6 +1196,7 @@ export class ScoreEngineService {
                 isMaiden: true
             });
         }
+        if (!overSummary) return;
 
         // Generate Commentary - use populated name if available
         const bowlerName = (bowler?.playerId as any)?.name || (event as any).bowlerName || 'Unknown Bowler';
@@ -1207,36 +1229,38 @@ export class ScoreEngineService {
         }
 
         // Set the label correctly
-        ballObj.ballLabel = ballLabel;
-        ballObj.timestamp = new Date();
+        if (ballObj) {
+            ballObj.ballLabel = ballLabel;
+            ballObj.timestamp = new Date();
 
-        // Add player IDs and names
-        if (state.bowler) {
-            ballObj.bowlerId = state.bowler.playerId;
-            ballObj.bowlerName = bowlerName;
-        }
-        if (state.striker) {
-            ballObj.batsmanId = state.striker.playerId;
-            ballObj.batsmanName = batsmanName;
-        }
+            // Add player IDs and names
+            if (state.bowler) {
+                ballObj.bowlerId = state.bowler.playerId;
+                ballObj.bowlerName = bowlerName;
+            }
+            if (state.striker) {
+                ballObj.batsmanId = state.striker.playerId;
+                ballObj.batsmanName = batsmanName;
+            }
 
-        // Capture live status at ball time (from Match entity now)
-        if (state.match) {
-            ballObj.odds = {
-                team1Odds: state.match.oddsBlue || 0,
-                team2Odds: state.match.oddsRed || 0,
-            };
-            ballObj.session = {
-                sessionName: state.match.oddsTeam || 'Session',
-                sessionValue: state.match.session || 0,
-                sessionBlue: state.match.sessionBlue || 0,
-                sessionRed: state.match.sessionRed || 0,
-            };
-            ballObj.lambi = {
-                lambiValue: state.match.lambi || 0,
-                lambiBlue: state.match.lambiBlue || 0,
-                lambiRed: state.match.lambiRed || 0,
-            };
+            // Capture live status at ball time (from Match entity)
+            if (state.match) {
+                ballObj.odds = {
+                    team1Odds: state.match.oddsBlue || 0,
+                    team2Odds: state.match.oddsRed || 0,
+                };
+                ballObj.session = {
+                    sessionName: state.match.oddsTeam || 'Session',
+                    sessionValue: state.match.session || 0,
+                    sessionBlue: state.match.sessionBlue || 0,
+                    sessionRed: state.match.sessionRed || 0,
+                };
+                ballObj.lambi = {
+                    lambiValue: state.match.lambi || 0,
+                    lambiBlue: state.match.lambiBlue || 0,
+                    lambiRed: state.match.lambiRed || 0,
+                };
+            }
         }
 
         if (isComposite && overSummary.ballsData.length > 0) {
@@ -1249,7 +1273,7 @@ export class ScoreEngineService {
                 lastBallObj.commentary = ballObj.commentary;
             }
             overSummary.markModified('ballsData');
-        } else {
+        } else if (ballObj) {
             overSummary.ballsData.push(ballObj);
         }
 
@@ -1353,6 +1377,7 @@ export class ScoreEngineService {
             currentInning: state.inning.inningNumber,
             currentBall: currentBall || '0',
             recentBalls,
+            powerPlay: state.inning.powerPlay,
 
             // Standardized player IDs for UI highlights
             currentStrikerId: this.extractId(state.striker?.playerId),
@@ -1397,7 +1422,7 @@ export class ScoreEngineService {
         };
     }
 
-    private async publishMatchUpdate(matchId: string, state: MatchState, event: BallEvent): Promise<void> {
+    public async publishMatchUpdate(matchId: string, state: MatchState, event: BallEvent): Promise<void> {
         try {
             const ballLabel = this.buildBallLabel(event, state);
             this.logger.warn(`[ScoreEngine] Emitting scoreUpdate for ${matchId} (Score: ${state.inning.totalRuns}/${state.inning.totalWickets})`);
@@ -1437,7 +1462,7 @@ export class ScoreEngineService {
         }
     }
 
-    private async publishScorecardDelta(matchId: string, state: MatchState): Promise<void> {
+    public async publishScorecardDelta(matchId: string, state: MatchState): Promise<void> {
         try {
             const [allBatters, allBowlers] = await Promise.all([
                 this.battingModel.find({ matchId, inningId: state.inning._id }).populate('playerId', 'name').exec(),
@@ -1490,6 +1515,32 @@ export class ScoreEngineService {
             await this.redisPublisher.publishScorecardDelta(payload);
         } catch (err) {
             this.logger.error('publishScorecardDelta error:', err);
+        }
+    }
+    
+    /**
+     * Helper to broadcast state after a manual admin update (non-ball event)
+     */
+    public async broadcastManualUpdate(matchId: string) {
+        try {
+            const matchObjectId = this.validateAndConvertId(matchId);
+            const state = await this.loadState(matchObjectId);
+            
+            // Use a dummy event to satisfy the publisher requirements
+            const dummyEvent: any = { 
+                type: 'BALL', 
+                runs: 0, 
+                extras: 0,
+                isWicket: false
+            };
+            
+            // Broadcast full state and scorecard delta
+            await this.publishMatchUpdate(matchId, state, dummyEvent);
+            await this.publishScorecardDelta(matchId, state);
+            
+            this.logger.log(`[Broadcast] Manual update broadcasted for match ${matchId}`);
+        } catch (error) {
+            this.logger.error(`[Broadcast] Error broadcasting manual update for match ${matchId}: ${error.message}`);
         }
     }
 

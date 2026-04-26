@@ -369,6 +369,8 @@ export class LiveMatchService {
         liveStatus.currentBowlerId = currentInning.currentBowlerId;
 
         liveStatus.lastWicket = currentInning.lastWicket;
+        liveStatus.powerPlay = currentInning.powerPlay;
+
 
         // Calculated Run Rate
         if (currentInning.totalBalls > 0) {
@@ -908,6 +910,7 @@ export class LiveMatchService {
         if (updateDto.lambi !== undefined) matchUpdate.lambi = updateDto.lambi;
         if (updateDto.lambiBlue !== undefined) matchUpdate.lambiBlue = updateDto.lambiBlue;
         if (updateDto.lambiRed !== undefined) matchUpdate.lambiRed = updateDto.lambiRed;
+        if (updateDto.powerplayOvers !== undefined) matchUpdate.powerplayOvers = parseInt(updateDto.powerplayOvers, 10) || 0;
 
         // Flags
         if (updateDto.isMatchNew !== undefined) matchUpdate.isMatchNew = updateDto.isMatchNew;
@@ -927,6 +930,8 @@ export class LiveMatchService {
         if (updateDto.bowlingTeamId && Types.ObjectId.isValid(updateDto.bowlingTeamId)) {
           inningUpdate.bowlingTeamId = new Types.ObjectId(updateDto.bowlingTeamId);
         }
+        if (updateDto.powerPlay !== undefined) inningUpdate.powerPlay = updateDto.powerPlay;
+        if (updateDto.onOC !== undefined) inningUpdate.onOC = updateDto.onOC;
 
         // Manual Score Updates - Ignore if we are switching innings to prevent stale data overwrites
         const isSwitchingInning = updateDto.currentInning !== undefined && updateDto.currentInning !== originalInningNum;
@@ -943,14 +948,19 @@ export class LiveMatchService {
             const totalBalls = (overPart * 6) + (ballPart || 0);
             inningUpdate.totalBalls = totalBalls;
             inningUpdate.totalOvers = overPart;
-            inningUpdate.currentBall = String(ballPart || 0); // Update current ball string
+            // Note: currentBall string is NOT automatically updated from overs to preserve event labels
           }
         }
 
-        // Explicitly update balls if provided (override calculation from overs)
+        // Handle explicit balls update
         if (updateDto.balls !== undefined) {
           inningUpdate.totalBalls = updateDto.balls;
           inningUpdate.totalOvers = Math.floor(updateDto.balls / 6);
+        }
+
+        // Handle explicit currentBall update (as label)
+        if (updateDto.currentBall !== undefined) {
+          inningUpdate.currentBall = String(updateDto.currentBall);
         }
 
         // Update Active Players
@@ -1006,11 +1016,12 @@ export class LiveMatchService {
         }
 
         // 3. Powerplay / Flags Update
-        if (updateDto.onOC !== undefined || updateDto.powerplayOvers !== undefined) {
+        if (updateDto.onOC !== undefined || updateDto.powerplayOvers !== undefined || updateDto.powerPlay !== undefined) {
           await this.redisPublisher.publishPowerplayUpdate({
             matchId,
             onOC: updateDto.onOC,
             powerplayOvers: updateDto.powerplayOvers,
+            powerPlay: updateDto.powerPlay,
             timestamp: new Date()
           });
         }

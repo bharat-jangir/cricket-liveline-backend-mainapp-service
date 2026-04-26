@@ -70,6 +70,10 @@ export class LiveMatchController {
   async updateLiveStatus(@Payload() payload: { matchId: string; updateDto: UpdateLiveStatusDto }) {
     try {
       const result = await this.liveMatchService.updateLiveStatus(payload.matchId, payload.updateDto);
+      
+      // Broadcast manual update to all connected clients
+      await this.scoreEngineService.broadcastManualUpdate(payload.matchId);
+      
       return result;
     } catch (error: any) {
       this.logger.error('Error in updateLiveStatus', error.stack || error.message || error);
@@ -81,6 +85,10 @@ export class LiveMatchController {
   async switchTeams(@Payload() payload: { matchId: string; switchDto: SwitchTeamDto }) {
     try {
       const result = await this.liveMatchService.switchTeams(payload.matchId, payload.switchDto);
+      
+      // Broadcast update when teams switch
+      await this.scoreEngineService.broadcastManualUpdate(payload.matchId);
+      
       return result;
     } catch (error: any) {
       this.logger.error('Error in switchTeams', error.stack || error.message || error);
@@ -132,6 +140,10 @@ export class LiveMatchController {
         this.logger.error('Service returned invalid result structure', { result });
         throw new Error('Service returned invalid result structure');
       }
+
+      // Broadcast if change is significant (strike change or out)
+      await this.scoreEngineService.broadcastManualUpdate(payload.matchId);
+
       return result.response;
     } catch (error: any) {
       this.logger.error('Error in updateBatsman', error.stack || error.message || error);
@@ -162,6 +174,10 @@ export class LiveMatchController {
         this.logger.error('Service returned invalid result structure', { result });
         throw new Error('Service returned invalid result structure');
       }
+
+      // Broadcast update (e.g. for powerplay toggles)
+      await this.scoreEngineService.broadcastManualUpdate(payload.matchId);
+
       return result.response;
     } catch (error: any) {
       this.logger.error('Error in updateInning', error.stack || error.message || error);
@@ -529,6 +545,10 @@ export class LiveMatchController {
   async setStriker(@Payload() payload: { matchId: string; inningNumber: number; playerId: string }) {
     try {
       const result = await this.liveMatchService.setStriker(payload.matchId, payload.inningNumber, payload.playerId);
+      
+      // Broadcast current striker change
+      await this.scoreEngineService.broadcastManualUpdate(payload.matchId);
+      
       return result;
     } catch (error: any) {
       this.logger.error('Error in setStriker', error.stack || error.message || error);
@@ -540,6 +560,10 @@ export class LiveMatchController {
   async setNonStriker(@Payload() payload: { matchId: string; inningNumber: number; playerId: string }) {
     try {
       const result = await this.liveMatchService.setNonStriker(payload.matchId, payload.inningNumber, payload.playerId);
+      
+      // Broadcast change
+      await this.scoreEngineService.broadcastManualUpdate(payload.matchId);
+      
       return result;
     } catch (error: any) {
       this.logger.error('Error in setNonStriker', error.stack || error.message || error);
@@ -562,6 +586,10 @@ export class LiveMatchController {
   async setCurrentBowler(@Payload() payload: { matchId: string; inningNumber: number; playerId: string }) {
     try {
       const result = await this.liveMatchService.setCurrentBowler(payload.matchId, payload.inningNumber, payload.playerId);
+      
+      // Broadcast change
+      await this.scoreEngineService.broadcastManualUpdate(payload.matchId);
+      
       return result;
     } catch (error: any) {
       this.logger.error('Error in setCurrentBowler', error.stack || error.message || error);
