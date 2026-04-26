@@ -304,7 +304,7 @@ export class ScoreEngineService {
             const eventType = (event.type || '').toLowerCase();
             
             switch (true) {
-                case eventType === 'run' || !isNaN(Number(eventType)) || eventType === 'b':
+                case eventType === 'run' || !isNaN(Number(eventType)):
                     newState = await this.processBall(currentState, event);
                     break;
                 case eventType === 'wide' || eventType.startsWith('wd'):
