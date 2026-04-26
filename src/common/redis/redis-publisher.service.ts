@@ -183,6 +183,14 @@ export interface PowerplayUpdatePayload {
   powerplayOvers?: string;
   powerPlay?: boolean;
   onOC?: boolean;
+  noScorecards?: boolean;
+  noCommentry?: boolean;
+  timestamp: Date;
+}
+
+export interface SessionsTablePayload {
+  matchId: string;
+  sessions: any[];
   timestamp: Date;
 }
 
@@ -332,6 +340,19 @@ export class RedisPublisherService implements OnModuleDestroy {
       this.logger.debug(`Published powerplay update for match ${payload.matchId}`);
     } catch (error) {
       this.logger.error('Failed to publish powerplay update:', error);
+    }
+  }
+
+  async publishSessionsTable(payload: SessionsTablePayload): Promise<void> {
+    try {
+      const channel = `match:${payload.matchId.toString()}:sessions`;
+      await this.client.publish(channel, JSON.stringify({
+        ...payload,
+        matchId: payload.matchId.toString()
+      }));
+      this.logger.debug(`Published sessions table update for match ${payload.matchId}`);
+    } catch (error) {
+      this.logger.error('Failed to publish sessions table update:', error);
     }
   }
 

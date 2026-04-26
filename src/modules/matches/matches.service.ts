@@ -65,7 +65,7 @@ export class MatchesService {
       ];
 
       if (match.seriesId) {
-        populatePaths.push({ path: 'seriesId', select: 'name shortName' });
+        populatePaths.push({ path: 'seriesId', select: 'name shortName hasPoints' });
       }
 
       // Don't populate tournamentId - Tournament model may not be registered
@@ -191,7 +191,7 @@ export class MatchesService {
         .populate('teamAId', 'name shortName code logo')
         .populate('teamBId', 'name shortName code logo')
         .populate('venueId', 'name city country')
-        .populate('seriesId', 'name shortName'); // Always populate seriesId if it exists
+        .populate('seriesId', 'name shortName hasPoints'); // Always populate seriesId if it exists
 
       // Don't populate tournamentId - Tournament model may not be registered
       // if (tournamentId) {
@@ -264,7 +264,8 @@ export class MatchesService {
         .populate('officials.umpire2Id', 'name')
         .populate('officials.thirdUmpireId', 'name')
         .populate('officials.refereeId', 'name')
-        .populate('toss.winnerId', 'name shortName code logo');
+        .populate('toss.winnerId', 'name shortName code logo')
+        .populate('seriesId', 'name shortName hasPoints');
 
       if (!matchDoc) {
         return this.responseService.error(
@@ -322,7 +323,7 @@ export class MatchesService {
       if (match && match.seriesId) {
         const matchWithSeries = await this.matchModel
           .findById(id)
-          .populate('seriesId', 'name shortName')
+          .populate('seriesId', 'name shortName hasPoints')
           .lean();
         if (matchWithSeries && matchWithSeries.seriesId) {
           // Only copy seriesId — don't overwrite already-populated teamAId/teamBId/venueId
@@ -430,7 +431,7 @@ export class MatchesService {
       ];
 
       if (match.seriesId) {
-        populatePaths.push({ path: 'seriesId', select: 'name shortName' });
+        populatePaths.push({ path: 'seriesId', select: 'name shortName hasPoints' });
       }
 
       // Don't populate tournamentId - Tournament model may not be registered

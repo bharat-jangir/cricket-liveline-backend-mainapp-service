@@ -325,6 +325,7 @@ export class LiveMatchService {
         isMatchNew: match.isMatchNew,
         viewMode: match.viewMode,
         isNotShowing: match.isNotShowing,
+        noScorecards: match.noScorecards,
         noCommentry: match.noCommentry,
         onOC: match.onOC,
         comment2: match.comment2,
@@ -914,6 +915,7 @@ export class LiveMatchService {
 
         // Flags
         if (updateDto.isMatchNew !== undefined) matchUpdate.isMatchNew = updateDto.isMatchNew;
+        if (updateDto.noScorecards !== undefined) matchUpdate.noScorecards = updateDto.noScorecards;
         if (updateDto.viewMode !== undefined) matchUpdate.viewMode = updateDto.viewMode;
         if (updateDto.isNotShowing !== undefined) matchUpdate.isNotShowing = updateDto.isNotShowing;
         if (updateDto.noCommentry !== undefined) matchUpdate.noCommentry = updateDto.noCommentry;
@@ -1016,12 +1018,20 @@ export class LiveMatchService {
         }
 
         // 3. Powerplay / Flags Update
-        if (updateDto.onOC !== undefined || updateDto.powerplayOvers !== undefined || updateDto.powerPlay !== undefined) {
+        if (
+          updateDto.onOC !== undefined || 
+          updateDto.powerplayOvers !== undefined || 
+          updateDto.powerPlay !== undefined ||
+          updateDto.noScorecards !== undefined ||
+          updateDto.noCommentry !== undefined
+        ) {
           await this.redisPublisher.publishPowerplayUpdate({
             matchId,
             onOC: updateDto.onOC,
             powerplayOvers: updateDto.powerplayOvers,
             powerPlay: updateDto.powerPlay,
+            noScorecards: updateDto.noScorecards,
+            noCommentry: updateDto.noCommentry,
             timestamp: new Date()
           });
         }
@@ -2263,6 +2273,14 @@ export class LiveMatchService {
         ...createDto,
       });
 
+      // Broadcast full sessions list update
+      const allSessions = await this.liveMatchSessionModel.find({ matchId: new Types.ObjectId(matchId) }).sort({ session: 1 }).lean();
+      await this.redisPublisher.publishSessionsTable({
+        matchId,
+        sessions: allSessions,
+        timestamp: new Date()
+      });
+
       return this.responseService.successWithSingle(
         session,
         'Session added successfully',
@@ -2314,6 +2332,14 @@ export class LiveMatchService {
         );
       }
 
+      // Broadcast full sessions list update
+      const allSessions = await this.liveMatchSessionModel.find({ matchId: new Types.ObjectId(matchId) }).sort({ session: 1 }).lean();
+      await this.redisPublisher.publishSessionsTable({
+        matchId,
+        sessions: allSessions,
+        timestamp: new Date()
+      });
+
       return this.responseService.successWithSingle(
         session,
         'Session updated successfully',
@@ -2363,6 +2389,14 @@ export class LiveMatchService {
           HttpStatus.NOT_FOUND,
         );
       }
+
+      // Broadcast full sessions list update
+      const allSessions = await this.liveMatchSessionModel.find({ matchId: new Types.ObjectId(matchId) }).sort({ session: 1 }).lean();
+      await this.redisPublisher.publishSessionsTable({
+        matchId,
+        sessions: allSessions,
+        timestamp: new Date()
+      });
 
       return this.responseService.successWithSingle(
         null,

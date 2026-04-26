@@ -288,7 +288,12 @@ export class ScoreEngineService {
             }
 
             // Define events that should be stored in history for Undo
-            const isScoringEvent = ['RUN', 'WIDE', 'NO_BALL', 'BYE', 'LEG_BYE', 'PENALTY', 'WICKET', 'OVER_END'].includes(event.type);
+            const typeUC = (event.type || '').toUpperCase();
+            const scoringTypes = ['RUN', 'WIDE', 'NO_BALL', 'BYE', 'LEG_BYE', 'PENALTY', 'WICKET', 'OVER_END', 'O', 'W', 'B', 'WD', 'NB', 'LB', 'BY', 'FH'];
+            const isScoringEvent = scoringTypes.includes(typeUC) || 
+                                 typeUC.startsWith('WD') || 
+                                 typeUC.startsWith('NB') || 
+                                 typeUC.startsWith('^');
 
             // Save snapshot of current state before applying changes (only for scoring events)
             if (isScoringEvent) {
@@ -296,20 +301,35 @@ export class ScoreEngineService {
             }
 
             let newState = currentState;
-            switch (event.type) {
-                case 'RUN':
-                case 'WIDE':
-                case 'NO_BALL':
-                case 'BYE':
-                case 'LEG_BYE':
-                case 'PENALTY':
+            const eventType = (event.type || '').toLowerCase();
+            
+            switch (true) {
+                case eventType === 'run' || !isNaN(Number(eventType)) || eventType === 'b':
                     newState = await this.processBall(currentState, event);
                     break;
-                case 'WICKET':
+                case eventType === 'wide' || eventType.startsWith('wd'):
+                    newState = await this.processBall(currentState, event);
+                    break;
+                case eventType === 'no_ball' || eventType.startsWith('nb'):
+                    newState = await this.processBall(currentState, event);
+                    break;
+                case eventType === 'bye' || eventType === 'by':
+                    newState = await this.processBall(currentState, event);
+                    break;
+                case eventType === 'leg_bye' || eventType === 'lb':
+                    newState = await this.processBall(currentState, event);
+                    break;
+                case eventType === 'wicket' || eventType === 'w' || eventType.startsWith('^'):
                     newState = await this.processWicket(currentState, event);
                     break;
-                case 'OVER_END':
+                case eventType === 'penalty':
+                    newState = await this.processBall(currentState, event);
+                    break;
+                case eventType === 'over_end' || eventType === 'o':
                     newState = await this.endOver(currentState, event);
+                    break;
+                case eventType === 'message':
+                    newState = await this.processMessage(currentState, event);
                     break;
                 default:
                     // Handle unknown events (rain delay, messages, etc.)
@@ -379,11 +399,12 @@ export class ScoreEngineService {
         const runsScored = event.runs || 0;
         const extras = event.extras || 0;
 
-        const isWide = event.type === 'WIDE';
-        const isNoBall = event.type === 'NO_BALL';
-        const isBye = event.type === 'BYE';
-        const isLegBye = event.type === 'LEG_BYE';
-        const isPenalty = event.type === 'PENALTY';
+        const type = event.type?.toLowerCase() || '';
+        const isWide = type === 'wide' || type.startsWith('wd');
+        const isNoBall = type === 'no_ball' || type.startsWith('nb');
+        const isBye = type === 'bye' || type === 'by';
+        const isLegBye = type === 'leg_bye' || type === 'lb';
+        const isPenalty = type === 'penalty';
         const isLegalBall = !isWide && !isNoBall && !isPenalty;
 
         // 1. Inning Updates
@@ -523,7 +544,7 @@ export class ScoreEngineService {
 
             // Mark player as out
             striker.isOut = true;
-            striker.dismissalType = event.wicketType || 'bowled';
+            striker.dismissalType = this.normalizeWicketType(event.wicketType || event.type);
             striker.bowlerId = bowler?.playerId;
             striker.teamId = inning.battingTeamId;
 
@@ -538,7 +559,7 @@ export class ScoreEngineService {
             inning.lastWicket = {
                 name: (striker.playerId as any)?.name || `Player ${striker.playerId}`,
                 playerName: (striker.playerId as any)?.name || `Player ${striker.playerId}`,
-                dismissal: event.wicketType || 'bowled',
+                dismissal: this.normalizeWicketType(event.wicketType || event.type),
                 runs: striker.runs,
                 balls: striker.balls,
                 fours: striker.fours,
@@ -1666,6 +1687,21 @@ export class ScoreEngineService {
             this.logger.error('getRecentBalls error:', error);
             return [];
         }
+    }
+
+    private normalizeWicketType(rawType: string): string {
+        if (!rawType) return 'bowled';
+        const map: Record<string, string> = {
+            'b': 'bowled',
+            'w': 'wicket',
+            '^1': 'bowled',
+            '^2': 'caught',
+            '^4': 'run out',
+            '^5': 'lbw',
+            '^8': 'stumped',
+        };
+        const type = rawType.toLowerCase();
+        return map[type] || map[rawType] || rawType || 'bowled';
     }
 
     private extractId(input: any): string {
