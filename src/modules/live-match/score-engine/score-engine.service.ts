@@ -349,13 +349,18 @@ export class ScoreEngineService {
             this.teamModel.findById(match.teamBId).select('name shortName code').exec(),
         ]);
 
+        const latestOver = await this.overSummaryModel.findOne({
+            matchId,
+            inningId: inning._id
+        }).sort({ overNumber: -1 }).exec();
+
         return {
             match,
             inning,
             striker: striker as any,
             nonStriker: nonStriker as any,
             bowler: bowler as any,
-            currentOverBalls: [],
+            currentOverBalls: latestOver ? latestOver.ballsData : [],
             teamA: teamA as any,
             teamB: teamB as any,
         };
@@ -477,6 +482,10 @@ export class ScoreEngineService {
 
         this.recordBallData(state, event, false);
         await this.updatePartnership(state, event, false);
+        
+        // Update over summary immediately for scoring balls
+        await this.updateOverSummary(state, event);
+        
         return state;
     }
 
@@ -574,6 +583,9 @@ export class ScoreEngineService {
 
             this.recordBallData(state, event, true);
             await this.updatePartnership(state, event, true);
+
+            // Update over summary immediately for wickets
+            await this.updateOverSummary(state, event);
         }
         return state;
     }
@@ -701,7 +713,7 @@ export class ScoreEngineService {
         // Sort by _id descending to get the absolute latest event
         const lastHistory = await this.scoreHistoryModel.findOne({
             matchId: new Types.ObjectId(matchId)
-        }).sort({ _id: -1 });
+        }).sort({ _id: -1 }).exec();
 
         if (!lastHistory) {
             this.logger.warn(`[UNDO] No history found for match ${matchId}`);
@@ -731,10 +743,16 @@ export class ScoreEngineService {
             currentState.bowler = await this.bowlingModel.findById(snapshot.bowler._id).populate('playerId', 'name');
         }
 
-        // Restore inning fields from the snapshot to ensure UI consistency (e.g. requiresWicketSelection)
+        // Restore only IDs and specific UI flags from the snapshot.
+        // Mathematical fields (totalRuns, totalBalls, etc.) are reversed in reverseBallEvent.
         if (snapshot.inning) {
             currentState.inning.requiresWicketSelection = snapshot.inning.requiresWicketSelection;
             currentState.inning.wicketContext = snapshot.inning.wicketContext;
+            
+            // Sync IDs for strike restoration (essential since reverseBallEvent doesn't swap strike anymore)
+            if (snapshot.inning.currentStrikerId) currentState.inning.currentStrikerId = snapshot.inning.currentStrikerId;
+            if (snapshot.inning.currentNonStrikerId) currentState.inning.currentNonStrikerId = snapshot.inning.currentNonStrikerId;
+            if (snapshot.inning.currentBowlerId) currentState.inning.currentBowlerId = snapshot.inning.currentBowlerId;
         }
 
         // Validate undo is possible
@@ -949,6 +967,22 @@ export class ScoreEngineService {
     private async revertOverSummaryEvent(state: MatchState, event: BallEvent): Promise<void> {
         if (!state.bowler) return;
 
+        // Special handling for OVER_END: only remove the summary highlight, do not pop balls
+        if (event.type === 'OVER_END') {
+            const overSummary = await this.overSummaryModel.findOne({
+                matchId: state.inning.matchId,
+                inningId: state.inning._id,
+            }).sort({ overNumber: -1 });
+
+            if (overSummary) {
+                this.logger.log(`[UNDO] Reversing OVER_END for over ${overSummary.overNumber}`);
+                overSummary.overHighlight = null;
+                overSummary.markModified('overHighlight');
+                await overSummary.save();
+            }
+            return;
+        }
+
         // Calculate which over the undone ball belonged to
         // If it's a legal ball, totalBalls was just decremented, so we look at the ball that was just there?
         // Actually, for the summary, we want the current state's over perspective?
@@ -1031,11 +1065,6 @@ export class ScoreEngineService {
     private async persistState(state: MatchState, event?: BallEvent) {
         const { inning } = state;
 
-        // Update over summary for each ball immediately
-        if (state.currentOverBalls.length > 0 && event && !['UNDO', 'OVER_END'].includes(event.type)) {
-            await this.updateOverSummary(state, event);
-        }
-
         // Update Inning Live State
         const ballsPerOver = state.match.ballsPerOver || 6;
         const currentOver = Math.floor(inning.totalBalls / ballsPerOver);
@@ -1095,7 +1124,7 @@ export class ScoreEngineService {
         if (!lastBall) return;
 
         const ballsPerOver = state.match.ballsPerOver || 6;
-        const currentOver = Math.floor(inning.totalBalls / ballsPerOver) + 1;
+        const currentOver = Math.ceil(inning.totalBalls / ballsPerOver) || 1;
         const isComposite = (event as any).isComposite;
 
         // Get ball label
@@ -1234,21 +1263,9 @@ export class ScoreEngineService {
             );
 
             if (milestone) {
-                const milestoneObj = await this.commentaryGenerator.createMilestoneHighlight(
-                    {
-                        matchId: inning.matchId,
-                        inningId: inning._id,
-                        playerId: state.striker.playerId,
-                        type: milestone === '50' ? 'fifty' : milestone === '100' ? 'century' : 'double_century',
-                        value: parseInt(milestone),
-                        balls: state.striker.balls,
-                        overNumber: currentOver,
-                        ballNumber: inning.totalBalls % 6 || 6,
-                        timestamp: new Date(),
-                    } as any,
-                    batsmanName
-                );
-                overSummary.ballsData.push(milestoneObj);
+                this.logger.log(`[MILESTONE] ${batsmanName} reached ${milestone}`);
+                // NOTE: Milestone highlights are handled as separate events in commentary 
+                // and should not be pushed to the overSummary.ballsData array to avoid UI issues.
             }
         }
 

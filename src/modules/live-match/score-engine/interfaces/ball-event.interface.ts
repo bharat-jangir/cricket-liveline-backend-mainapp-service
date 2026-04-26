@@ -12,4 +12,5 @@ export interface BallEvent {
     timestamp?: number;
     ballNumber?: number;
     isComposite?: boolean;
+    parentType?: string; // e.g. 'WIDE' or 'NO_BALL' for composite sub-events
 }
