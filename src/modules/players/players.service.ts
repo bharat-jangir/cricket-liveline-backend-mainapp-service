@@ -195,8 +195,28 @@ export class PlayersService {
         }
       }
 
+      // Build the update object. For careerStats, flatten into dot-notation
+      // so individual format keys are merged (not the whole object replaced).
+      const { careerStats, ...rest } = updatePlayerDto as any;
+      const updateOp: any = {};
+
+      if (Object.keys(rest).length > 0) {
+        updateOp.$set = { ...rest };
+      }
+
+      if (careerStats) {
+        if (!updateOp.$set) updateOp.$set = {};
+        // Overwrite the entire category (batting or bowling) if provided.
+        // This ensures that deleted rows are removed from the database.
+        for (const statType of ['batting', 'bowling']) {
+          if (careerStats[statType]) {
+            updateOp.$set[`careerStats.${statType}`] = careerStats[statType];
+          }
+        }
+      }
+
       const player = await this.playerModel
-        .findByIdAndUpdate(id, updatePlayerDto, { new: true })
+        .findByIdAndUpdate(id, updateOp, { new: true })
         .lean();
 
       if (!player) {
@@ -231,6 +251,7 @@ export class PlayersService {
   }
 
   async remove(id: string): Promise<IResponseWithStatusCode<any>> {
+
     try {
       const player = await this.playerModel.findByIdAndDelete(id).lean();
 

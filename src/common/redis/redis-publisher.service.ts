@@ -30,6 +30,7 @@ export interface MatchUpdatePayload {
   currentBall?: string;
   currentInning?: number;
   powerPlay?: boolean;
+  speech?: boolean;
   
   currentStrikerId?: string;
   currentNonStrikerId?: string;
@@ -200,6 +201,8 @@ export interface SessionsTablePayload {
 
 export interface CommentaryPayload {
   matchId: string;
+  inningId: string;
+  onOc?: boolean;
   inningNumber: number;
   overNumber: number;
   ballLabel: string;

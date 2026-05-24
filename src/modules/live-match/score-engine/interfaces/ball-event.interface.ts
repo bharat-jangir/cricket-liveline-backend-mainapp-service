@@ -13,4 +13,5 @@ export interface BallEvent {
     ballNumber?: number;
     isComposite?: boolean;
     parentType?: string; // e.g. 'WIDE' or 'NO_BALL' for composite sub-events
+    speech?: boolean;
 }

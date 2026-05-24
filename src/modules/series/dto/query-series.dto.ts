@@ -62,6 +62,10 @@ export class QuerySeriesDto {
   endDateTo?: string;
 
   @IsOptional()
+  @IsString()
+  leagueType?: string;
+
+  @IsOptional()
   @Type(() => Number)
   @IsNumber()
   @Min(1)

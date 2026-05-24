@@ -15,7 +15,7 @@ import { MatchesModule } from './modules/matches/matches.module';
 import { PointsTablesModule } from './modules/points-tables/points-tables.module';
 import { FantasyStatsModule } from './modules/fantasy-stats/fantasy-stats.module';
 import { LiveMatchModule } from './modules/live-match/live-match.module';
-import { LogsModule } from './modules/logs/logs.module';
+import { RankingModule } from './modules/ranking/ranking.module';
 
 @Module({
   imports: [
@@ -46,10 +46,12 @@ import { LogsModule } from './modules/logs/logs.module';
     PointsTablesModule,
     FantasyStatsModule,
     LiveMatchModule,
-    LogsModule,
+    // LogsModule removed (custom logging not implemented)
+    // New Ranking module
+    RankingModule,
   ],
   controllers: [AppController],
   providers: [AppService],
 })
-export class AppModule {}
+export class AppModule { }
 

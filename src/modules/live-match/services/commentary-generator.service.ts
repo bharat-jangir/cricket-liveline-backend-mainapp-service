@@ -26,7 +26,9 @@ export class CommentaryGeneratorService {
     ): Promise<any> {
         const commentary = `${bowlerName} to ${batsmanName}`;
         return {
-            ballId: new Types.ObjectId(),
+            ballId: ball.ballId || new Types.ObjectId(),
+            ballNumber: ball.ballNumber,
+            overNumber: ball.overNumber,
             ballLabel: (ball.runs !== undefined ? ball.runs : (ball.runsScored || 0)).toString(),
             commentary,
             shortText: commentary,
@@ -83,7 +85,9 @@ export class CommentaryGeneratorService {
         shortText = `${batsmanName} OUT`;
 
         return {
-            ballId: new Types.ObjectId(),
+            ballId: ball.ballId || new Types.ObjectId(),
+            ballNumber: ball.ballNumber,
+            overNumber: ball.overNumber,
             ballLabel: 'W',
             commentary,
             shortText,

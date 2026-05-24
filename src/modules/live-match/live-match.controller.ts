@@ -1,4 +1,4 @@
-import { Controller, Logger, Patch, Param, Body, Get, Post } from '@nestjs/common';
+import { Controller, Logger, Patch, Param, Body, Get, Post, Query } from '@nestjs/common';
 import { MessagePattern, Payload } from '@nestjs/microservices';
 import { LiveMatchService } from './live-match.service';
 import { UpdateLiveStatusDto } from './dto/update-live-status.dto';
@@ -12,6 +12,7 @@ import { CreateSessionDto } from './dto/create-session.dto';
 import { UpdateSessionDto } from './dto/update-session.dto';
 
 import { ScoreEngineService } from './score-engine/score-engine.service';
+import { CommentaryQueryDto } from './dto/commentary-query.dto';
 import { ScoreEventDto } from './dto/score-event.dto';
 
 @Controller('live-match')
@@ -337,8 +338,11 @@ export class LiveMatchController {
   @MessagePattern('live-match.handleEvent')
   async handleEvent(@Payload() payload: { matchId: string; event: ScoreEventDto }) {
     try {
-      console.log('handleEvent payload', payload);
-      const ballEvent: any = { ...payload.event, matchId: payload.matchId };
+      const ballEvent: any = { 
+        ...payload.event, 
+        matchId: payload.matchId,
+        speech: payload.event?.type !== 'UNDO'
+      };
       const result = await this.scoreEngineService.handleEvent(payload.matchId, ballEvent);
 
       // Check for match conclusion
@@ -379,7 +383,8 @@ export class LiveMatchController {
         matchId: payload.matchId,
         originalEvent: payload.event,
         bowlerName: payload.bowlerName,
-        batsmanName: payload.batsmanName
+        batsmanName: payload.batsmanName,
+        speech: event?.type !== 'UNDO'
       };
       const result = await this.scoreEngineService.handleEvent(payload.matchId, ballEvent);
 
@@ -644,10 +649,11 @@ export class LiveMatchController {
 
   @Get(':matchId/commentary')
   @MessagePattern('live-match.getCommentary')
-  async getCommentary(@Param('matchId') matchId: string, @Payload() payload: any) {
+  async getCommentary(@Param('matchId') matchId: string, @Query() query: CommentaryQueryDto, @Payload() payload: any) {
     try {
       const mid = matchId || payload.matchId || payload;
-      const result = await this.liveMatchService.getMatchCommentary(mid, payload.inningId);
+      const finalQuery = { ...query, ...payload };
+      const result = await this.liveMatchService.getMatchCommentary(mid, finalQuery);
       return result;
     } catch (error: any) {
       this.logger.error('Error in getCommentary', error.stack || error.message || error);

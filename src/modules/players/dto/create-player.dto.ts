@@ -208,5 +208,9 @@ export class CreatePlayerDto {
   @ValidateNested()
   @Type(() => SocialMediaDto)
   socialMedia?: SocialMediaDto;
+
+  @IsOptional()
+  careerStats?: any; // Flexible: { batting: { test: {...}, odi: {...} }, bowling: { test: {...}, ... } }
 }
+
 

@@ -22,6 +22,7 @@ import { ScoreHistory } from '../../entities/score-history.entity';
 import { ResponseService, IResponseWithStatusCode } from '../../common/services/response.service';
 import { RedisPublisherService } from '../../common/redis/redis-publisher.service';
 import { ScoreEngineService } from './score-engine/score-engine.service';
+import { CommentaryQueryDto } from './dto/commentary-query.dto';
 
 @Injectable()
 export class LiveMatchService {
@@ -1469,11 +1470,52 @@ export class LiveMatchService {
 
       this.logger.log(`[getScorecard] Bowling (Strict True): ${processedBowling.map(p => `${(p as any).playerId?.name}`).join(', ')}`);
 
+      // Get Fall of Wickets dynamically from ScoreHistory
+      const scoreHistoryWickets = await this.scoreHistoryModel
+        .find({
+          matchId: matchObjectId,
+          inningId: inning._id,
+          $or: [
+            { 'event.type': 'WICKET' },
+            { 'event.isWicket': true },
+            { isWicket: true }
+          ]
+        })
+        .sort({ ballNumber: 1 })
+        .lean();
+
+      const fallOfWickets = scoreHistoryWickets.map((w, idx) => {
+        const ev = w.event || {};
+        const snap = w.stateSnapshot || {};
+        const innSnap = snap.inning || {};
+        const strikerSnap = snap.striker || {};
+        
+        const wicketNumber = idx + 1;
+        const batsmanName = ev.batsmanName || strikerSnap.playerName || (strikerSnap.playerId && typeof strikerSnap.playerId === 'object' ? (strikerSnap.playerId as any).name : 'Unknown');
+        
+        const runsBefore = innSnap.totalRuns || 0;
+        const ballRuns = ev.runs || 0;
+        const totalRuns = runsBefore + ballRuns;
+        
+        const totalBallsBefore = innSnap.totalBalls || 0;
+        const overNum = Math.floor(totalBallsBefore / 6);
+        const ballIndex = (totalBallsBefore % 6) + 1;
+        const over = `${overNum}.${ballIndex}`;
+        
+        return {
+          wicketNumber,
+          batsmanName,
+          score: `${totalRuns}-${wicketNumber}`,
+          over
+        };
+      });
+
       return this.responseService.successWithSingle(
         {
           inning,
           batting: processedBatting,
           bowling: processedBowling,
+          fallOfWickets,
         },
         'Scorecard retrieved successfully',
         'SCORECARD_RETRIEVED',
@@ -3015,142 +3057,352 @@ export class LiveMatchService {
   /**
    * Get match commentary (all or for specific inning)
    */
-  async getMatchCommentary(matchId: string, inningId?: string): Promise<IResponseWithStatusCode<any>> {
+  async getMatchCommentary(matchId: string, queryParams: CommentaryQueryDto): Promise<IResponseWithStatusCode<any>> {
     try {
+      const { page = 1, limit = 20, inningId, type = 'all' } = queryParams;
+      const skip = (page - 1) * limit;
+
       if (!Types.ObjectId.isValid(matchId)) {
-        return this.responseService.error(
-          'Invalid match ID',
-          'INVALID_MATCH_ID',
-          'Match ID must be a valid MongoDB ObjectId',
-          undefined,
-          null,
-          HttpStatus.BAD_REQUEST,
-        );
+        return this.responseService.error('Invalid match ID', 'INVALID_MATCH_ID', 'Match ID must be a valid MongoDB ObjectId', undefined, null, HttpStatus.BAD_REQUEST);
       }
 
       const matchObjectId = new Types.ObjectId(matchId);
       const query: any = { matchId: matchObjectId };
-
       if (inningId && Types.ObjectId.isValid(inningId)) {
         query.inningId = new Types.ObjectId(inningId);
       }
 
-      // 1. Fetch historical summaries
-      const summaries = await this.overSummaryModel
-        .find(query)
-        .sort({ overNumber: -1 }) // Recent overs first
-        .lean();
+      // Fetch all innings for this match to map inningId to inningNumber
+      const allInnings = await this.inningModel.find({ matchId: matchObjectId }).select('inningNumber').lean();
+      const inningMap = new Map(allInnings.map(inn => [inn._id.toString(), inn.inningNumber]));
 
-      // 2. Fetch match to get ballsPerOver and current state
+      const commentary: any[] = [];
+      const addedBallIds = new Set<string>();
+
+      // 1. Fetch match for context
       const match = await this.matchModel.findById(matchObjectId).select('ballsPerOver status').lean();
       const ballsPerOver = match?.ballsPerOver || 6;
 
-      // 3. Fetch live recent balls from ScoreHistory (ongoing over)
-      // Find the last over number we have in summaries
-      const lastSummarizedOver = summaries.length > 0 ? summaries[0].overNumber : 0;
-      
-      const liveEvents = await this.scoreHistoryModel.find({
-        matchId: matchObjectId,
-        ...((query as any).inningId ? { inningId: (query as any).inningId } : {})
-      }).sort({ ballNumber: -1 }).lean();
-
-      // Filter for events that happened AFTER the last summarized over
-      const liveRecentBalls = liveEvents.filter(hist => {
-        const ballOverNum = Math.floor((hist.ballNumber - 1) / ballsPerOver) + 1;
-        return ballOverNum > lastSummarizedOver;
-      });
-
-      // Flatten and transform ballsData into a flat commentary list
-      const commentary: any = [];
-      const addedBallIds = new Set<string>();
-
-      // A. Process live recent balls first (most recent)
-      liveRecentBalls.forEach(hist => {
-        const ev = hist.event;
-        const ballId = hist._id?.toString();
+      if (type === 'all') {
+        // --- PAGINATED ALL COMMENTARY ---
         
-        if (ballId && !addedBallIds.has(ballId)) {
-          commentary.push({
-            ...ev,
-            _id: ballId,
-            ballId: ballId,
-            ballLabel: ev.ballLabel || ev.runs?.toString() || '0',
-            runs: ev.runs || 0,
-            isWicket: ev.type === 'WICKET',
-            timestamp: (hist as any).createdAt
-          });
-          addedBallIds.add(ballId);
-        }
-      });
+        // A. Handle Live/Ongoing Balls (Only on Page 1)
+        if (page === 1) {
+          const liveEvents = await this.scoreHistoryModel.find({
+            matchId: matchObjectId,
+            ...(query.inningId ? { inningId: query.inningId } : {})
+          }).sort({ _id: -1 }).limit(100).lean();
 
-      // B. Process summaries (historical)
-      summaries.forEach(over => {
-        // Add over end highlight if it exists
-        if (over.overHighlight) {
-          const ballId = over.overHighlight.ballId?.toString() || over.overHighlight.ballId;
-          if (ballId && !addedBallIds.has(ballId)) {
-            commentary.push({
-              ...over.overHighlight,
-              _id: ballId,
-              ballId: ballId,
-              overNumber: over.overNumber,
-              inningId: over.inningId,
-              matchId: over.matchId,
-            });
-            addedBallIds.add(ballId);
-          }
-        }
+          // Get last summarized over to avoid duplicates
+          const lastSummary = await this.overSummaryModel.findOne(query).sort({ overNumber: -1 }).select('overNumber').lean();
+          const lastSummarizedOver = lastSummary?.overNumber || 0;
 
-        if (over.ballsData && Array.isArray(over.ballsData)) {
-          // We want the balls within an over to be in reverse order too (most recent first)
-          const overBalls = [...over.ballsData].reverse();
-          overBalls.forEach(ball => {
-            const bId = (ball as any).ballId?.toString() || (ball as any)._id?.toString();
-            if (bId && !addedBallIds.has(bId)) {
+          liveEvents.forEach(hist => {
+            const ev = hist.event;
+            const ballOverNum = Math.floor((hist.ballNumber - 1) / ballsPerOver) + 1;
+            if (ballOverNum > lastSummarizedOver) {
+              const bId = hist._id.toString();
+              if (!addedBallIds.has(bId)) {
+                const innNum = inningMap.get(hist.inningId.toString()) || 1;
                 commentary.push({
-                    ...ball,
-                    _id: bId,
-                    ballId: bId,
-                    overNumber: over.overNumber,
-                    inningId: over.inningId,
-                    matchId: over.matchId,
+                  ...ev,
+                  _id: bId,
+                  ballId: bId,
+                  ballNumber: hist.ballNumber,
+                  inningNumber: innNum,
+                  inningId: hist.inningId,
+                  matchId: hist.matchId,
+                  timestamp: (hist as any).createdAt
                 });
                 addedBallIds.add(bId);
+              }
             }
           });
         }
-      });
 
-      this.logger.log(`[getMatchCommentary] Collected ${commentary.length} items for match ${matchId}`);
+        // B. Handle Historical Overs (Paginated)
+        const summaries = await this.overSummaryModel
+          .find(query)
+          .sort({ _id: -1 })
+          .skip(skip)
+          .limit(limit)
+          .lean();
 
-      return this.responseService.successWithSingle(
-        commentary,
+        summaries.forEach(over => {
+          // Add over end highlight
+          if (over.overHighlight) {
+            const hId = over.overHighlight.ballId?.toString() || over.overHighlight.ballId;
+            if (hId && !addedBallIds.has(hId)) {
+              commentary.push({ ...over.overHighlight, _id: hId, ballId: hId, overNumber: over.overNumber, inningId: over.inningId, matchId: over.matchId });
+              addedBallIds.add(hId);
+            }
+          }
+
+            // Add balls in reverse order
+            if (over.ballsData && Array.isArray(over.ballsData)) {
+              let legalBallCount = 0;
+              const ballsWithNumbers = over.ballsData.map((ball: any, idx: number) => {
+                const isLegal = ball.isLegal !== false;
+                if (isLegal) legalBallCount++;
+                // Use actual ballNumber if stored, otherwise calculate from over and index
+                const bNum = ball.ballNumber || (over.overNumber - 1) * ballsPerOver + (isLegal ? legalBallCount : legalBallCount + 1);
+                return { ...ball, ballNumber: bNum, ballInOver: isLegal ? legalBallCount : undefined };
+              });
+
+              const overBalls = [...ballsWithNumbers].reverse();
+              overBalls.forEach(ball => {
+                const bId = (ball as any).ballId?.toString() || (ball as any)._id?.toString();
+                if (bId && !addedBallIds.has(bId)) {
+                  const innNum = inningMap.get(over.inningId.toString()) || 1;
+                  commentary.push({ ...ball, _id: bId, ballId: bId, overNumber: over.overNumber, inningNumber: innNum, inningId: over.inningId, matchId: over.matchId });
+                  addedBallIds.add(bId);
+                }
+              });
+            }
+        });
+      } else if (type === 'over' || type === 'maiden') {
+        // --- OVER-BASED FILTERING ---
+        const overQuery = { ...query };
+        if (type === 'maiden') overQuery.isMaiden = true;
+
+        const summaries = await this.overSummaryModel
+          .find(overQuery)
+          .sort({ _id: -1 })
+          .skip(skip)
+          .limit(limit)
+          .lean();
+
+        summaries.forEach(over => {
+          if (over.overHighlight) {
+            const hId = over.overHighlight.ballId?.toString() || over.overHighlight.ballId;
+            commentary.push({
+              ...over.overHighlight,
+              _id: hId || `over-${over._id}`,
+              ballId: hId,
+              overNumber: over.overNumber,
+              inningId: over.inningId,
+              matchId: over.matchId,
+              type: 'over_end',
+              ballsData: over.ballsData,
+              isMaiden: over.isMaiden
+            });
+          }
+        });
+      } else {
+        // --- BALL-BASED FILTERING (4s, 6s, Wkts, Milestones, Highlights) ---
+        
+        // A. Fetch Live/Ongoing Balls (Only on Page 1)
+        if (page === 1) {
+          const liveQuery: any = {
+            matchId: matchObjectId,
+            ...(query.inningId ? { inningId: query.inningId } : {})
+          };
+
+          if (type === 'four') {
+            liveQuery['event.runs'] = 4;
+          } else if (type === 'six') {
+            liveQuery['event.runs'] = 6;
+          } else if (type === 'wicket') {
+            liveQuery.$or = [
+              { 'event.type': 'WICKET' },
+              { 'event.isWicket': true },
+              { isWicket: true }
+            ];
+          } else if (type === 'milestone') {
+            liveQuery['event.type'] = 'milestone';
+          } else if (type === 'highlight') {
+            liveQuery.$or = [
+              { 'event.runs': { $in: [4, 6] } },
+              { 'event.type': 'WICKET' },
+              { 'event.isWicket': true },
+              { isWicket: true }
+            ];
+          }
+
+          const liveEvents = await this.scoreHistoryModel.find(liveQuery).sort({ _id: -1 }).limit(100).lean();
+
+          // Get last summarized over to avoid duplicates
+          const lastSummary = await this.overSummaryModel.findOne(query).sort({ overNumber: -1 }).select('overNumber').lean();
+          const lastSummarizedOver = lastSummary?.overNumber || 0;
+
+          liveEvents.forEach(hist => {
+            const ev = hist.event || {};
+            const ballOverNum = Math.floor((hist.ballNumber - 1) / ballsPerOver) + 1;
+            
+            if (ballOverNum > lastSummarizedOver) {
+              const bId = hist._id.toString();
+              if (!addedBallIds.has(bId)) {
+                const innNum = inningMap.get(hist.inningId.toString()) || 1;
+                const ballInOv = ((hist.ballNumber - 1) % ballsPerOver) + 1;
+
+                let ballLabel = ev.originalEvent || (ev.runs !== undefined ? ev.runs.toString() : '0');
+                if (ev.type === 'WICKET') {
+                  ballLabel = 'W';
+                }
+
+                let highlightData: any = undefined;
+                if (ev.type === 'WICKET' && hist.stateSnapshot?.striker) {
+                  const striker = hist.stateSnapshot.striker;
+                  highlightData = {
+                    wicketDismissedPlayerId: striker.playerId?._id || striker.playerId,
+                    wicketDismissalType: ev.wicketType || 'out',
+                    wicketBowlerName: ev.bowlerName,
+                    wicketBatsmanName: ev.batsmanName || (striker.playerId && typeof striker.playerId === 'object' ? striker.playerId.name : 'Batsman'),
+                    wicketFielderName: ev.helperId,
+                    wicketBatsmanRuns: striker.runs,
+                    wicketBatsmanBalls: striker.balls + 1, // Include the current ball
+                    wicketBatsmanFours: striker.fours,
+                    wicketBatsmanSixes: striker.sixes,
+                    wicketBatsmanSR: striker.strikeRate
+                  };
+                }
+
+                const commentaryText = ev.commentary || `${ev.bowlerName || 'Bowler'} to ${ev.batsmanName || 'Batsman'}${ev.type === 'WICKET' ? ', OUT!' : ''}`;
+
+                commentary.push({
+                  ...ev,
+                  _id: bId,
+                  ballId: bId,
+                  ballNumber: hist.ballNumber,
+                  ballInOver: ballInOv,
+                  overNumber: ballOverNum,
+                  inningNumber: innNum,
+                  inningId: hist.inningId,
+                  matchId: hist.matchId,
+                  timestamp: (hist as any).createdAt || (hist as any).timestamp || new Date(),
+                  ballLabel,
+                  commentary: commentaryText,
+                  type: ev.type === 'WICKET' ? 'wicket' : (ev.type?.toLowerCase() || 'ball'),
+                  runs: ev.runs || 0,
+                  isWicket: ev.type === 'WICKET' || ev.isWicket || false,
+                  highlightData,
+                  wicketData: highlightData
+                });
+                addedBallIds.add(bId);
+              }
+            }
+          });
+        }
+
+        // B. Handle Historical Overs (Paginated Aggregation)
+        const ballMatch: any = {};
+        if (type === 'four') {
+          ballMatch.$or = [
+            { 'ballsData.runs': 4 },
+            { 'ballsData.ballLabel': '4' }
+          ];
+        } else if (type === 'six') {
+          ballMatch.$or = [
+            { 'ballsData.runs': 6 },
+            { 'ballsData.ballLabel': '6' }
+          ];
+        } else if (type === 'wicket') {
+          ballMatch.$or = [
+            { 'ballsData.isWicket': true },
+            { 'ballsData.type': 'wicket' },
+            { 'ballsData.ballLabel': { $regex: /W/ } }
+          ];
+        } else if (type === 'milestone') {
+          ballMatch['ballsData.type'] = 'milestone';
+        } else if (type === 'highlight') {
+          ballMatch.$or = [
+            { 'ballsData.runs': { $in: [4, 6] } },
+            { 'ballsData.ballLabel': { $in: ['4', '6'] } },
+            { 'ballsData.isWicket': true },
+            { 'ballsData.type': 'wicket' },
+            { 'ballsData.ballLabel': { $regex: /W/ } }
+          ];
+        }
+
+        const pipeline: any[] = [
+          { $match: query },
+          { $unwind: { path: '$ballsData', includeArrayIndex: 'ballIndex' } },
+          { $addFields: {
+              'ballsData.ballNumber': {
+                  $add: [
+                      { $multiply: [ { $subtract: ['$overNumber', 1] }, ballsPerOver ] },
+                      { $add: ['$ballIndex', 1] }
+                  ]
+              }
+          }},
+          { $match: ballMatch },
+          { $sort: { overNumber: -1, ballIndex: -1 } },
+          { $skip: Number(skip) },
+          { $limit: Number(limit) },
+          {
+            $project: {
+              _id: '$ballsData.ballId',
+              ballId: '$ballsData.ballId',
+              commentary: '$ballsData.commentary',
+              ballLabel: '$ballsData.ballLabel',
+              runs: '$ballsData.runs',
+              isWicket: '$ballsData.isWicket',
+              ballNumber: '$ballsData.ballNumber',
+              ballInOver: { $add: ['$ballIndex', 1] },
+              type: '$ballsData.type',
+              timestamp: '$ballsData.timestamp',
+              overNumber: '$overNumber',
+              inningId: '$inningId',
+              inningNumber: { $literal: 1 }, // Mapped dynamically in JS post-processing below
+              bowlerName: '$ballsData.bowlerName',
+              batsmanName: '$ballsData.batsmanName',
+              highlightData: '$ballsData.highlightData',
+              displayTheme: '$ballsData.displayTheme'
+            }
+          }
+        ];
+
+        const filteredBalls = await this.overSummaryModel.aggregate(pipeline);
+        
+        filteredBalls.forEach(ball => {
+          const bId = ball.ballId?.toString() || ball._id?.toString();
+          if (bId && !addedBallIds.has(bId)) {
+            const innNum = inningMap.get(ball.inningId.toString()) || 1;
+            
+            // Post-process fields for consistency
+            let runs = ball.runs;
+            if (runs === undefined || runs === null) {
+              if (ball.ballLabel === '4') runs = 4;
+              else if (ball.ballLabel === '6') runs = 6;
+              else runs = 0;
+            }
+
+            let isWicket = ball.isWicket;
+            if (isWicket === undefined || isWicket === null) {
+              isWicket = ball.type === 'wicket' || (ball.ballLabel && ball.ballLabel.includes('W'));
+            }
+
+            commentary.push({
+              ...ball,
+              _id: bId,
+              ballId: bId,
+              inningNumber: innNum,
+              runs,
+              isWicket,
+              wicketData: ball.highlightData // Ensure wicketData fallback exists
+            });
+            addedBallIds.add(bId);
+          }
+        });
+      }
+
+      return this.responseService.success(
+        {
+          result: commentary,
+          pagination: {
+            page: Number(page),
+            limit: Number(limit),
+            count: commentary.length
+          }
+        },
         'Commentary retrieved successfully',
         'COMMENTARY_RETRIEVED',
-        'Commentary retrieved successfully',
-        undefined,
-        HttpStatus.OK,
+        'Commentary retrieved successfully'
       );
     } catch (error) {
-      return this.responseService.error(
-        'Failed to fetch commentary',
-        'COMMENTARY_FETCH_FAILED',
-        error.message,
-        undefined,
-        null,
-        HttpStatus.INTERNAL_SERVER_ERROR,
-      );
+      return this.responseService.error('Failed to fetch commentary', 'COMMENTARY_FETCH_FAILED', error.message, undefined, null, HttpStatus.INTERNAL_SERVER_ERROR);
     }
   }
-
-  /**
-   * Update commentary text
-   * Note: commentaryId here refers to the ballId within an OverSummary
-   */
-  /**
-   * Update commentary text
-   * Note: commentaryId here refers to the ballId within an OverSummary
-   */
   async updateCommentary(commentaryId: string, commentary: string, matchId?: string): Promise<IResponseWithStatusCode<any>> {
     try {
       const idQuery = Types.ObjectId.isValid(commentaryId)

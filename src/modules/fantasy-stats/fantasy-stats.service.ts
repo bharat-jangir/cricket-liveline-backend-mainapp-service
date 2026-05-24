@@ -17,6 +17,134 @@ export class FantasyStatsService {
     private readonly responseService: ResponseService,
   ) {}
 
+  async getSeriesLeaders(seriesId: string): Promise<IResponseWithStatusCode<any>> {
+    try {
+      const sId = new Types.ObjectId(seriesId);
+      this.logger.debug(`Fetching leaders for seriesId: ${seriesId}`);
+
+      const leaders = await this.fantasyStatsModel.aggregate([
+        { $match: { seriesId: sId } },
+        {
+          $group: {
+            _id: '$playerId',
+            totalRuns: { $sum: '$runs' },
+            totalWickets: { $sum: '$wickets' },
+            totalCatches: { $sum: '$catches' },
+            totalSixes: { $sum: '$sixes' },
+            highestScore: { $max: '$runs' },
+            bestFiguresWickets: { $max: '$wickets' },
+            avgEconomy: { $avg: '$economy' },
+            teamId: { $first: '$teamId' },
+            role: { $first: '$role' },
+          }
+        },
+        {
+          $lookup: {
+            from: 'players',
+            localField: '_id',
+            foreignField: '_id',
+            as: 'player'
+          }
+        },
+        { $unwind: '$player' },
+        {
+          $lookup: {
+            from: 'teams',
+            localField: 'teamId',
+            foreignField: '_id',
+            as: 'team'
+          }
+        },
+        { $unwind: { path: '$team', preserveNullAndEmptyArrays: true } }
+      ]);
+
+      this.logger.debug(`Aggregation found ${leaders.length} leaders`);
+
+      // Format the response into categories
+      const formattedLeaders = {
+        Batting: leaders
+          .filter(l => l.totalRuns > 0)
+          .sort((a, b) => b.totalRuns - a.totalRuns)
+          .slice(0, 10)
+          .map(l => ({
+            id: l._id,
+            title: 'Most Runs',
+            player: l.player.name,
+            value: l.totalRuns.toString(),
+            team: l.team?.code || 'N/A',
+            image: l.player.image,
+            metric: 'Runs'
+          })),
+        Bowling: leaders
+          .filter(l => l.totalWickets > 0)
+          .sort((a, b) => b.totalWickets - a.totalWickets)
+          .slice(0, 10)
+          .map(l => ({
+            id: l._id,
+            title: 'Most Wickets',
+            player: l.player.name,
+            value: l.totalWickets.toString(),
+            team: l.team?.code || 'N/A',
+            image: l.player.image,
+            metric: 'Wkts'
+          })),
+        Fielding: leaders
+          .filter(l => l.totalCatches > 0)
+          .sort((a, b) => b.totalCatches - a.totalCatches)
+          .slice(0, 10)
+          .map(l => ({
+            id: l._id,
+            title: 'Most Catches',
+            player: l.player.name,
+            value: l.totalCatches.toString(),
+            team: l.team?.code || 'N/A',
+            image: l.player.image,
+            metric: 'Catches'
+          }))
+      };
+
+      return this.responseService.successWithSingle(
+        formattedLeaders,
+        'Series leaders retrieved successfully',
+        'LEADERS_RETRIEVED',
+        'Series leaders retrieved successfully',
+        undefined,
+        HttpStatus.OK,
+      );
+    } catch (error: any) {
+      this.logger.error('Error in getSeriesLeaders', error.stack || error.message || error);
+      return this.responseService.error(
+        'Failed to retrieve series leaders',
+        'GET_LEADERS_FAILED',
+        error.message || 'Unknown error occurred',
+        undefined,
+        null,
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
+  async seedSeriesStats(seriesId: string, matchId: string, teamIds: string[]): Promise<any> {
+    const stats = [];
+    // Just a quick helper to seed some data
+    for (const teamId of teamIds) {
+      // Create 5 random players' stats for this match
+      for (let i = 0; i < 5; i++) {
+        stats.push({
+          seriesId: new Types.ObjectId(seriesId),
+          matchId: new Types.ObjectId(matchId),
+          playerId: new Types.ObjectId(), // This won't work perfectly as player needs to exist, but good for testing logic
+          teamId: new Types.ObjectId(teamId),
+          role: 'batsman',
+          runs: Math.floor(Math.random() * 100),
+          wickets: Math.floor(Math.random() * 5),
+          points: Math.floor(Math.random() * 100),
+        });
+      }
+    }
+    return this.fantasyStatsModel.insertMany(stats);
+  }
+
   async create(
     seriesId: string,
     createDto: CreateFantasyStatsDto,

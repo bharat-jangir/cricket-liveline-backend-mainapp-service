@@ -45,5 +45,14 @@ export class QueryMatchesDto {
   @IsNumber()
   @Min(1)
   limit?: number = 10;
+
+  @IsOptional()
+  @IsString()
+  cursor?: string;
+
+  @IsOptional()
+  @IsEnum(['past', 'future'])
+  direction?: 'past' | 'future';
 }
+
 

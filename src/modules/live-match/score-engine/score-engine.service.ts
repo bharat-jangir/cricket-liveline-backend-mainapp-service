@@ -647,8 +647,12 @@ export class ScoreEngineService {
             return;
         }
 
+        const ballsPerOver = state.match.ballsPerOver || 6;
+        const currentOverNum = Math.ceil(state.inning.totalBalls / ballsPerOver) || 1;
+
         state.currentOverBalls.push({
             ballNumber: state.inning.totalBalls,
+            overNumber: currentOverNum,
             runs: event.runs || 0,
             extras: event.extras || 0,
             isWide: event.type === 'WIDE',
@@ -713,6 +717,28 @@ export class ScoreEngineService {
 
             overSummary.overHighlight = highlight;
             overSummary.markModified('overHighlight');
+
+            // Broadcast the over highlight
+            try {
+                await this.redisPublisher.publishCommentary({
+                    matchId: inning.matchId.toString(),
+                    inningId: inning._id.toString(),
+                    inningNumber: inning.inningNumber,
+                    overNumber: overNumber,
+                    ballLabel: highlight.ballLabel || '',
+                    ballType: highlight.type,
+                    commentary: highlight.commentary,
+                    runs: highlight.runs || 0,
+                    extras: highlight.extras || 0,
+                    isWicket: false,
+                    batsmanName: '',
+                    bowlerName: bowlerStats.name,
+                    highlightData: highlight.highlightData,
+                    timestamp: highlight.timestamp || new Date()
+                });
+            } catch (err) {
+                this.logger.error('Failed to publish over summary highlight', err);
+            }
             await overSummary.save();
         }
 
@@ -1282,6 +1308,31 @@ export class ScoreEngineService {
                     lambiRed: state.match.lambiRed || 0,
                 };
             }
+
+            // Broadcast the commentary via Redis so sockets can forward it
+            try {
+                await this.redisPublisher.publishCommentary({
+                    matchId: inning.matchId.toString(),
+                    inningId: inning._id.toString(),
+                    onOc: !!state.match?.onOC,
+                    inningNumber: inning.inningNumber,
+                    overNumber: currentOver,
+                    ballLabel: ballObj.ballLabel,
+                    ballType: ballObj.type,
+                    commentary: ballObj.commentary,
+                    runs: ballObj.runs,
+                    extras: ballObj.extras,
+                    isWicket: ballObj.isWicket,
+                    batsmanName: ballObj.batsmanName,
+                    batsmanId: ballObj.batsmanId,
+                    bowlerName: ballObj.bowlerName,
+                    bowlerId: ballObj.bowlerId,
+                    highlightData: ballObj.highlightData,
+                    timestamp: ballObj.timestamp
+                });
+            } catch (err) {
+                this.logger.error('Failed to publish commentary from score engine', err);
+            }
         }
 
         if (isComposite && overSummary.ballsData.length > 0) {
@@ -1311,6 +1362,28 @@ export class ScoreEngineService {
                 this.logger.log(`[MILESTONE] ${batsmanName} reached ${milestone}`);
                 // NOTE: Milestone highlights are handled as separate events in commentary 
                 // and should not be pushed to the overSummary.ballsData array to avoid UI issues.
+                
+                try {
+                    await this.redisPublisher.publishCommentary({
+                        matchId: inning.matchId.toString(),
+                        inningId: inning._id.toString(),
+                        onOc: !!state.match?.onOC,
+                        inningNumber: inning.inningNumber,
+                        overNumber: currentOver,
+                        ballLabel: 'M',
+                        ballType: 'milestone',
+                        commentary: `${batsmanName} reached ${milestone}`,
+                        runs: 0,
+                        extras: 0,
+                        isWicket: false,
+                        batsmanName: batsmanName,
+                        batsmanId: state.striker?.playerId?.toString(),
+                        bowlerName: '',
+                        timestamp: new Date()
+                    });
+                } catch (err) {
+                    this.logger.error('Failed to publish milestone', err);
+                }
             }
         }
 
@@ -1459,6 +1532,7 @@ export class ScoreEngineService {
             };
 
             const payload = await this.buildMatchUpdatePayload(matchId, state, type, currentBall, lastBall);
+            payload.speech = !!event.speech;
 
             await this.redisPublisher.publishMatchUpdate(payload);
 

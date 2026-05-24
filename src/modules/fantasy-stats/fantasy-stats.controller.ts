@@ -101,5 +101,19 @@ export class FantasyStatsController {
       throw error;
     }
   }
+  @MessagePattern('fantasy-stats.getSeriesLeaders')
+  async getSeriesLeaders(@Payload() seriesId: string) {
+    try {
+      const result = await this.fantasyStatsService.getSeriesLeaders(seriesId);
+      if (!result || !result.response) {
+        this.logger.error('Service returned invalid result structure', { result });
+        throw new Error('Service returned invalid result structure');
+      }
+      return result.response;
+    } catch (error: any) {
+      this.logger.error('Error in getSeriesLeaders', error.stack || error.message || error);
+      throw error;
+    }
+  }
 }
 

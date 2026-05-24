@@ -117,9 +117,12 @@ export class MatchesService {
         matchFormat,
         matchType,
         page = 1,
-        limit = 10
+        limit = 10,
+        cursor,
+        direction
       } = queryDto;
       const skip = (page - 1) * limit;
+
 
       // Build search filter
       const filter: any = {};
@@ -168,6 +171,28 @@ export class MatchesService {
         });
       }
 
+      if (venueId) {
+        const venueObjectId = Types.ObjectId.isValid(venueId) ? new Types.ObjectId(venueId) : null;
+        andConditions.push({
+          $or: [
+            ...(venueObjectId ? [{ venueId: venueObjectId }] : []),
+            { venueId: venueId },
+          ],
+        });
+      }
+
+      if (cursor && direction) {
+        const cursorDate = new Date(cursor);
+        if (!isNaN(cursorDate.getTime())) {
+          if (direction === 'future') {
+            andConditions.push({ matchDate: { $gte: cursorDate } });
+          } else if (direction === 'past') {
+            andConditions.push({ matchDate: { $lt: cursorDate } });
+          }
+        }
+      }
+
+
 
       // Combine $or conditions with $and if needed
       if (andConditions.length > 0) {
@@ -198,10 +223,18 @@ export class MatchesService {
       //   matchQuery.populate('tournamentId', 'name shortName');
       // }
 
+      let sortQuery: any = { matchDate: -1 };
+      if (direction === 'future') {
+        sortQuery = { matchDate: 1 };
+      } else if (direction === 'past') {
+        sortQuery = { matchDate: -1 };
+      }
+
       const [matchesList, total] = await Promise.all([
-        matchQuery.sort({ matchDate: -1 }).skip(skip).limit(limit).lean(),
+        matchQuery.sort(sortQuery).skip(skip).limit(limit).lean(),
         this.matchModel.countDocuments(filter),
       ]);
+
 
       const matches = matchesList as any[];
 

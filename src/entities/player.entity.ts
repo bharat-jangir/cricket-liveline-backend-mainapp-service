@@ -198,14 +198,18 @@ export class Player {
     twitter?: string;
     instagram?: string;
   };
+
+  // careerStats: plain Object so lean() returns it as a normal JS object.
+  // Structure: { batting: { test: {...}, odi: {...}, ... }, bowling: { test: {...}, ... } }
+  // Using Object type (Schema.Types.Mixed) for flexible dynamic format keys.
+  @Prop({ type: Object, default: {} })
+  careerStats?: Record<string, any>;
 }
 
 export const PlayerSchema = SchemaFactory.createForClass(Player);
 
 // Indexes
 PlayerSchema.index({ name: 1 });
-
 PlayerSchema.index({ country: 1 });
 PlayerSchema.index({ role: 1, isActive: 1 });
 PlayerSchema.index({ name: 'text', fullName: 'text' });
-
