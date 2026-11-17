@@ -28,6 +28,10 @@ export interface MatchUpdatePayload {
   overs?: string | number;
   runRate?: number;
   currentBall?: string;
+  oversDisplay?: string;
+  maxBalls?: number;
+  ballsRemaining?: number;
+  format?: string;
   currentInning?: number;
   powerPlay?: boolean;
   speech?: boolean;

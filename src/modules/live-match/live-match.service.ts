@@ -1,3 +1,4 @@
+import { getRules, formatOvers, inningBallLimit, inningWicketLimit, bowlerCreditedDismissal, normalizeDismissal } from './match-rules';
 import { Injectable, HttpStatus, Logger } from '@nestjs/common';
 import { InjectModel, InjectConnection } from '@nestjs/mongoose';
 import { Model, Types, Connection, ClientSession } from 'mongoose';
@@ -344,9 +345,13 @@ export class LiveMatchService {
         lambiBlue: match.lambiBlue,
         lambiRed: match.lambiRed,
 
-        // Config
-        ballsPerOver: match.ballsPerOver,
-        oversPerInning: match.oversPerInning,
+        // Config (format-aware: T20 6x20, T10 6x10, ODI 6x50, The Hundred 5x20 sets)
+        ballsPerOver: getRules(match).ballsPerOver,
+        oversPerInning: getRules(match).oversPerInning,
+        format: getRules(match).format,
+        maxBowlerBalls: getRules(match).maxBallsPerBowler,
+        powerplayBalls: getRules(match).powerplayBalls,
+        displayInBalls: getRules(match).displayInBalls,
       };
 
       if (currentInning) {
@@ -355,12 +360,15 @@ export class LiveMatchService {
         liveStatus.bowlingTeamId = currentInning.bowlingTeamId;
 
         // State
-        const ballsPerOver = match.ballsPerOver || 6;
+        const liveRules = getRules(match);
+        const ballsPerOver = liveRules.ballsPerOver;
         const currentOver = Math.floor(currentInning.totalBalls / ballsPerOver);
         const currentBall = currentInning.totalBalls % ballsPerOver;
 
         liveStatus.score = `${currentInning.totalRuns}/${currentInning.totalWickets}`;
         liveStatus.overs = `${currentOver}.${currentBall}`;
+        liveStatus.oversDisplay = formatOvers(currentInning.totalBalls, liveRules);
+        liveStatus.maxBalls = inningBallLimit(liveRules, currentInning);
         liveStatus.balls = currentInning.totalBalls;
         liveStatus.currentOver = currentOver;
         liveStatus.currentBall = currentInning.currentBall; // String value (e.g., 'check')
@@ -397,9 +405,9 @@ export class LiveMatchService {
             const currentRuns = currentInning.totalRuns;
             const runsNeeded = Math.max(0, target - currentRuns);
 
-            // Use large number for tests if not defined
-            const maxOvers = match.oversPerInning || (match.matchFormat === 'test' ? 9999 : 20);
-            const maxBalls = maxOvers * ballsPerOver;
+            // Format-aware limit (Test = effectively unlimited; super over has its own limit)
+            const limit = inningBallLimit(liveRules, currentInning);
+            const maxBalls = limit > 0 ? limit : 9999 * ballsPerOver;
             const ballsRem = Math.max(0, maxBalls - currentInning.totalBalls);
 
             liveStatus.equation = {
@@ -581,6 +589,9 @@ export class LiveMatchService {
       // Fetch all innings for these matches
       const innings = await this.inningModel.find({ matchId: { $in: matchObjectIds } }).lean();
 
+      const batchMatches = await this.matchModel.find({ _id: { $in: matchObjectIds } }).select('matchFormat ballsPerOver oversPerInning').lean();
+      const rulesByMatch = new Map(batchMatches.map(m => [String(m._id), getRules(m)]));
+
       // Group innings by match ID
       const scoresByMatch: Record<string, any> = {};
 
@@ -601,9 +612,7 @@ export class LiveMatchService {
           const score = `${latestInning.totalRuns}/${latestInning.totalWickets}`;
 
           // Simple overs calculation (assuming 6 balls per over if not available)
-          const currentOver = Math.floor(latestInning.totalBalls / 6);
-          const currentBall = latestInning.totalBalls % 6;
-          const overs = `${currentOver}.${currentBall}`;
+          const overs = formatOvers(latestInning.totalBalls, rulesByMatch.get(String(matchId)) || getRules({}));
 
           scoresByMatch[matchId] = {
             score,
@@ -652,6 +661,8 @@ export class LiveMatchService {
         const match = await this.matchModel.findById(matchObjectId).select('currentInning').lean();
         targetInning = match?.currentInning || 1;
       }
+      const recentMatch = await this.matchModel.findById(matchObjectId).select('matchFormat ballsPerOver oversPerInning').lean();
+      const recentBpo = getRules(recentMatch).ballsPerOver;
 
       const inning = await this.inningModel.findOne({
         matchId: matchObjectId,
@@ -669,7 +680,7 @@ export class LiveMatchService {
         );
       }
 
-      const currentOverNumber = Math.floor(inning.totalBalls / 6) + (inning.totalBalls % 6 > 0 ? 1 : 0);
+      const currentOverNumber = Math.floor(inning.totalBalls / recentBpo) + (inning.totalBalls % recentBpo > 0 ? 1 : 0);
       const startOver = Math.max(1, currentOverNumber - 2); // Last 3 overs
 
       const recentOvers = await this.overSummaryModel
@@ -948,7 +959,8 @@ export class LiveMatchService {
         if (updateDto.overs && !isSwitchingInning) {
           const [overPart, ballPart] = updateDto.overs.split('.').map(n => parseInt(n, 10));
           if (!isNaN(overPart)) {
-            const totalBalls = (overPart * 6) + (ballPart || 0);
+            const bpo = updateDto.ballsPerOver ?? getRules(match).ballsPerOver;
+            const totalBalls = (overPart * bpo) + (ballPart || 0);
             inningUpdate.totalBalls = totalBalls;
             inningUpdate.totalOvers = overPart;
             // Note: currentBall string is NOT automatically updated from overs to preserve event labels
@@ -958,7 +970,7 @@ export class LiveMatchService {
         // Handle explicit balls update
         if (updateDto.balls !== undefined) {
           inningUpdate.totalBalls = updateDto.balls;
-          inningUpdate.totalOvers = Math.floor(updateDto.balls / 6);
+          inningUpdate.totalOvers = Math.floor(updateDto.balls / (updateDto.ballsPerOver ?? getRules(match).ballsPerOver));
         }
 
         // Handle explicit currentBall update (as label)
@@ -1470,6 +1482,9 @@ export class LiveMatchService {
 
       this.logger.log(`[getScorecard] Bowling (Strict True): ${processedBowling.map(p => `${(p as any).playerId?.name}`).join(', ')}`);
 
+      const fowMatch = await this.matchModel.findById(matchObjectId).select('matchFormat ballsPerOver oversPerInning').lean();
+      const fowBpo = getRules(fowMatch).ballsPerOver;
+
       // Get Fall of Wickets dynamically from ScoreHistory
       const scoreHistoryWickets = await this.scoreHistoryModel
         .find({
@@ -1491,15 +1506,16 @@ export class LiveMatchService {
         const strikerSnap = snap.striker || {};
         
         const wicketNumber = idx + 1;
-        const batsmanName = ev.batsmanName || strikerSnap.playerName || (strikerSnap.playerId && typeof strikerSnap.playerId === 'object' ? (strikerSnap.playerId as any).name : 'Unknown');
+        const dismissedSnap: any = (ev.dismissedPlayerId && snap.nonStriker && String((snap.nonStriker.playerId && snap.nonStriker.playerId._id) || snap.nonStriker.playerId) === String(ev.dismissedPlayerId)) ? snap.nonStriker : strikerSnap;
+        const batsmanName = (dismissedSnap !== strikerSnap ? (dismissedSnap.playerId && dismissedSnap.playerId.name) : null) || ev.batsmanName || strikerSnap.playerName || (strikerSnap.playerId && typeof strikerSnap.playerId === 'object' ? (strikerSnap.playerId as any).name : 'Unknown');
         
         const runsBefore = innSnap.totalRuns || 0;
         const ballRuns = ev.runs || 0;
         const totalRuns = runsBefore + ballRuns;
         
         const totalBallsBefore = innSnap.totalBalls || 0;
-        const overNum = Math.floor(totalBallsBefore / 6);
-        const ballIndex = (totalBallsBefore % 6) + 1;
+        const overNum = Math.floor(totalBallsBefore / fowBpo);
+        const ballIndex = (totalBallsBefore % fowBpo) + 1;
         const over = `${overNum}.${ballIndex}`;
         
         return {
@@ -1595,6 +1611,11 @@ export class LiveMatchService {
           updateData.teamId = inning.battingTeamId;
         }
 
+        const prevBatting: any = await this.battingScorecardModel
+          .findOne({ matchId: matchObjectId, inningId: inning._id, playerId: playerObjectId })
+          .session(s)
+          .lean();
+
         // Find or create batting scorecard entry
         const battingScorecard = await this.battingScorecardModel.findOneAndUpdate(
           { matchId: matchObjectId, inningId: inning._id, playerId: playerObjectId },
@@ -1607,6 +1628,30 @@ export class LiveMatchService {
           .populate('fielderId', 'name fullName')
           .populate('fielder2Id', 'name fullName')
           .lean();
+
+        // Keep the bowler's wicket tally in sync when a dismissal is added/changed/removed
+        // (e.g. 'w' recorded as generic, later corrected to run out => bowler loses the wicket)
+        {
+          const credited = (isOut: any, type: any) => (isOut ? bowlerCreditedDismissal(type) : false);
+          const before = credited(prevBatting?.isOut, prevBatting?.dismissalType);
+          const after: any = battingScorecard;
+          const afterCredit = credited(after?.isOut, after?.dismissalType);
+          const bowlerRef = (after?.bowlerId && (after.bowlerId._id || after.bowlerId)) || prevBatting?.bowlerId;
+          if (before !== afterCredit && bowlerRef) {
+            await this.bowlingScorecardModel.updateOne(
+              { matchId: matchObjectId, inningId: inning._id, playerId: bowlerRef },
+              { $inc: { wickets: afterCredit ? 1 : -1 } },
+              { session: s },
+            );
+            if (!afterCredit) {
+              await this.bowlingScorecardModel.updateOne(
+                { matchId: matchObjectId, inningId: inning._id, playerId: bowlerRef, wickets: { $lt: 0 } },
+                { $set: { wickets: 0 } },
+                { session: s },
+              );
+            }
+          }
+        }
 
         // If batsman is out, update lastWicket info in the inning
         if (updateData.isOut === true) {
@@ -1697,7 +1742,8 @@ export class LiveMatchService {
         if (updateDto.calculationMode !== 'manual') {
           // Calculate total balls
           if (updateDto.overs !== undefined && updateDto.balls !== undefined) {
-            const totalBalls = Math.floor(updateDto.overs) * 6 + (updateDto.overs % 1) * 10 + updateDto.balls;
+            const bowlerMatch = await this.matchModel.findById(matchObjectId).select('matchFormat ballsPerOver oversPerInning').lean();
+            const totalBalls = Math.floor(updateDto.overs) * getRules(bowlerMatch).ballsPerOver + Math.round((updateDto.overs % 1) * 10) + updateDto.balls;
             updateData.balls = totalBalls;
           }
 
@@ -3001,6 +3047,50 @@ export class LiveMatchService {
         }
       }
 
+      // Format rules: bowler quota and consecutive-over restriction (T20/ODI/T10: no back-to-back overs;
+      // The Hundred: 5 or 10 consecutive balls, i.e. at most two consecutive 5-ball sets)
+      if (inning.type !== 'super_over') {
+        const ruleMatch = await this.matchModel.findById(matchObjectId).select('matchFormat ballsPerOver oversPerInning maxBowlerLimit').lean();
+        const rules = getRules(ruleMatch);
+        const existing = await this.bowlingScorecardModel.findOne({ matchId: matchObjectId, inningId: inning._id, playerId: playerObjectId }).lean();
+
+        if (existing && rules.maxBallsPerBowler > 0 && (existing.balls || 0) >= rules.maxBallsPerBowler) {
+          return this.responseService.error(
+            'Bowler quota reached',
+            'BOWLER_QUOTA_REACHED',
+            `This bowler has already bowled the maximum ${rules.maxBallsPerBowler} balls allowed in ${rules.format.toUpperCase()}.`,
+            undefined,
+            null,
+            HttpStatus.BAD_REQUEST,
+          );
+        }
+
+        const atOverBoundary = inning.totalBalls > 0 && inning.totalBalls % rules.ballsPerOver === 0;
+        if (existing && atOverBoundary && inning.currentBowlerId && String(inning.currentBowlerId) === String(playerObjectId)) {
+          const lastOvers = await this.overSummaryModel
+            .find({ matchId: matchObjectId, inningId: inning._id })
+            .sort({ overNumber: -1 })
+            .limit(rules.maxConsecutiveOvers)
+            .lean();
+          let consecutive = 0;
+          for (const o of lastOvers) {
+            if (String(o.bowlerId) === String(existing._id)) consecutive++; else break;
+          }
+          if (consecutive >= rules.maxConsecutiveOvers) {
+            return this.responseService.error(
+              'Bowler cannot continue',
+              'BOWLER_CONSECUTIVE_LIMIT',
+              rules.format === 'hundred'
+                ? 'In The Hundred a bowler may bowl at most 10 consecutive balls (two 5-ball sets). Select another bowler.'
+                : 'The same bowler cannot bowl consecutive overs. Select another bowler.',
+              undefined,
+              null,
+              HttpStatus.BAD_REQUEST,
+            );
+          }
+        }
+      }
+
       // Set all bowlers in this inning to not current first
       await this.bowlingScorecardModel.updateMany(
         { matchId: matchObjectId, inningId: inning._id },
@@ -3733,6 +3823,28 @@ export class LiveMatchService {
           throw new Error('Match not found');
         }
 
+        // Guard: a Super Over is only valid when the main match (or the previous Super Over) ended level.
+        const allInnings = await this.inningModel.find({ matchId: matchObjectId }).sort({ inningNumber: 1 }).session(session);
+        const mainInn = allInnings.filter(i => i.type !== 'super_over');
+        const soInn = allInnings.filter(i => i.type === 'super_over');
+        if (mainInn.length < 2) {
+          throw new Error('Both main innings must be played before a Super Over');
+        }
+        if (soInn.length === 0) {
+          if (mainInn[0].totalRuns !== mainInn[1].totalRuns) {
+            throw new Error('Super Over can only be started when the match is tied');
+          }
+        } else {
+          const prevFirst = soInn[soInn.length - 2];
+          const prevSecond = soInn[soInn.length - 1];
+          if (soInn.length % 2 !== 0 || !prevFirst || prevSecond.totalBalls === 0 && prevSecond.totalWickets === 0) {
+            throw new Error('Finish the current Super Over before starting another');
+          }
+          if (prevFirst.totalRuns !== prevSecond.totalRuns) {
+            throw new Error('Previous Super Over was not tied; match already has a winner');
+          }
+        }
+
         // Increment Super Over count
         const superOverCount = (match.superOverCount || 0) + 1;
 
@@ -3858,6 +3970,19 @@ export class LiveMatchService {
     }
   }
 
+  /** Evaluate the result and mark the match completed unless a Super Over is still required. */
+  private async concludeMatch(matchId: string): Promise<void> {
+    await this.evaluateMatchOutcome(matchId);
+    const m = await this.matchModel.findById(matchId).lean();
+    if (!m || m.status === 'completed') return;
+    const awaitingSuperOver =
+      m.result?.resultType === 'tie' && getRules(m).hasSuperOver && (m.result?.resultText || '').includes('Super Over');
+    const noWinnerYet = !m.result?.winnerId && m.result?.resultType !== 'tie';
+    if (!awaitingSuperOver && !noWinnerYet) {
+      await this.matchModel.updateOne({ _id: m._id }, { $set: { status: 'completed' } });
+    }
+  }
+
   // Check and conclude match if result is reached
   async checkMatchConclusion(matchId: string): Promise<boolean> {
     try {
@@ -3884,9 +4009,10 @@ export class LiveMatchService {
       if (innings.length >= 2) {
         const firstInning = innings[innings.length - 2]; // Previous inning (Target setter)
         const secondInning = innings[innings.length - 1]; // Current inning (Chaser)
-        if ((secondInning as any).originalInningNumber !== undefined && (secondInning as any).originalInningNumber !== match.currentInning) {
-          // Mismatch or something, skip
-        }
+        // Only evaluate when the inning being scored is the chasing (latest) inning.
+        // Otherwise a pre-created later inning could make us compare the wrong innings.
+        if (secondInning.inningNumber !== match.currentInning) return false;
+        if (firstInning.type !== 'super_over' && secondInning.type === 'super_over') return false;
 
         // Determine Target: Use explicit target from inning if available, otherwise calculate from previous inning
         // This supports Test matches (4th inning target) and D/L methods if target is set on Inning entity
@@ -3907,16 +4033,14 @@ export class LiveMatchService {
 
         // Check for Super Over limits
         const isSuperOver = match.currentInning > 2 && (match.result?.resultType === 'super_over' || firstInning.type === 'super_over');
-        const maxWickets = isSuperOver ? 2 : 10;
-        const ballsPerOver = match.ballsPerOver || 6;
-        // For Test matches, overs are usually unlimited (or large), so maxOvers check should be skipped or high
-        const maxOvers = isSuperOver ? 1 : (match.oversPerInning || 9999);
-        const maxBalls = maxOvers * ballsPerOver;
+        const rules = getRules(match);
+        const maxWickets = inningWicketLimit(rules, secondInning);
+        const maxBalls = inningBallLimit(rules, secondInning) || Number.MAX_SAFE_INTEGER;
 
         // 1. Chasing team wins
         if (target && currentRuns >= target) {
           this.logger.log(`Match ${matchId} Auto-Conclusion: Chasing team won (Runs ${currentRuns} >= Target ${target})`);
-          await this.evaluateMatchOutcome(matchId);
+          await this.concludeMatch(matchId);
           return true;
         }
 
@@ -3924,11 +4048,11 @@ export class LiveMatchService {
         if (wicketsDown >= maxWickets || secondInning.totalBalls >= maxBalls) {
           if (currentRuns < target - 1) { // Lost
             this.logger.log(`Match ${matchId} Auto-Conclusion: Bowling team won (Runs ${currentRuns} < Target ${target})`);
-            await this.evaluateMatchOutcome(matchId);
+            await this.concludeMatch(matchId);
             return true;
           } else if (currentRuns === target - 1) { // Tie
             this.logger.log(`Match ${matchId} Auto-Conclusion: Tie detected`);
-            await this.evaluateMatchOutcome(matchId);
+            await this.concludeMatch(matchId);
             return true;
           }
         }

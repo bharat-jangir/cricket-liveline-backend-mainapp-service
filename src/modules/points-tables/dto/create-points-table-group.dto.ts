@@ -13,7 +13,7 @@ export class CreatePointsTableGroupDto {
 
   @IsArray()
   @ArrayMinSize(1)
-  @IsEnum(['test', 'odi', 't20', 't20i'], { each: true })
+  @IsEnum(['test', 'odi', 't20', 't20i', 't10', 'hundred'], { each: true })
   formats: string[];
 
   @IsArray()

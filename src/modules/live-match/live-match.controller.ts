@@ -346,9 +346,9 @@ export class LiveMatchController {
       const result = await this.scoreEngineService.handleEvent(payload.matchId, ballEvent);
 
       // Check for match conclusion
-      this.liveMatchService.checkMatchConclusion(payload.matchId).catch(err =>
-        this.logger.error(`Error checking match conclusion: ${err.message}`)
-      );
+      this.liveMatchService.checkMatchConclusion(payload.matchId)
+        .then(concluded => concluded ? this.scoreEngineService.broadcastManualUpdate(payload.matchId) : undefined)
+        .catch(err => this.logger.error(`Error checking match conclusion: ${err.message}`));
 
       // Return wrapped response for gateway
       return {
@@ -389,9 +389,9 @@ export class LiveMatchController {
       const result = await this.scoreEngineService.handleEvent(payload.matchId, ballEvent);
 
       // Check for match conclusion
-      this.liveMatchService.checkMatchConclusion(payload.matchId).catch(err =>
-        this.logger.error(`Error checking match conclusion: ${err.message}`)
-      );
+      this.liveMatchService.checkMatchConclusion(payload.matchId)
+        .then(concluded => concluded ? this.scoreEngineService.broadcastManualUpdate(payload.matchId) : undefined)
+        .catch(err => this.logger.error(`Error checking match conclusion: ${err.message}`));
 
       // Check if wicket selection is required
       if (result && result.requiresWicketSelection) {
@@ -510,6 +510,15 @@ export class LiveMatchController {
         runs: runsTaken, // Hits go to batter
         extras: 1,
         isBoundary: runsTaken === 4 || runsTaken === 6
+      };
+    }
+
+    // Run-out after completing runs: w1, w2, w3 (runs count, dismissed player = striker unless specified via /event)
+    if (/^w[1-3]$/.test(event)) {
+      return {
+        type: 'WICKET',
+        runs: parseInt(event.substring(1)),
+        wicketType: 'run_out'
       };
     }
 

@@ -15,6 +15,7 @@ import { MatchesModule } from './modules/matches/matches.module';
 import { PointsTablesModule } from './modules/points-tables/points-tables.module';
 import { FantasyStatsModule } from './modules/fantasy-stats/fantasy-stats.module';
 import { LiveMatchModule } from './modules/live-match/live-match.module';
+import { AuthModule } from './modules/auth/auth.module';
 import { RankingModule } from './modules/ranking/ranking.module';
 
 @Module({
@@ -49,6 +50,7 @@ import { RankingModule } from './modules/ranking/ranking.module';
     // LogsModule removed (custom logging not implemented)
     // New Ranking module
     RankingModule,
+    AuthModule,
   ],
   controllers: [AppController],
   providers: [AppService],

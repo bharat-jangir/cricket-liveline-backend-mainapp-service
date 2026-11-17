@@ -21,7 +21,7 @@ export class CreatePointsTableEntryDto {
   @IsMongoId()
   teamId: string;
 
-  @IsEnum(['test', 'odi', 't20', 't20i'])
+  @IsEnum(['test', 'odi', 't20', 't20i', 't10', 'hundred'])
   @IsOptional()
   matchFormat?: string;
 

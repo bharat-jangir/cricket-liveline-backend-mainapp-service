@@ -85,8 +85,9 @@ describe('ScoreEngineService - Undo Logic', () => {
         inningModel.findOne.mockReturnValue({ exec: jest.fn().mockResolvedValue({ _id: mockInningId }) });
         teamModel.findById.mockReturnValue({ select: jest.fn().mockReturnValue({ exec: jest.fn().mockResolvedValue({ name: 'Team' }) }) });
         
+        overSummaryModel.findOne.mockReturnValue({ sort: jest.fn().mockReturnValue({ exec: jest.fn().mockResolvedValue(null) }) });
         scoreHistoryModel.findOne.mockReturnValue({
-            sort: jest.fn().mockResolvedValue(null),
+            sort: jest.fn().mockReturnValue({ exec: jest.fn().mockResolvedValue(null) }),
         });
 
         await expect(service.handleEvent(mockMatchId.toString(), { type: 'UNDO' } as any))
@@ -205,7 +206,9 @@ describe('ScoreEngineService - Undo Logic', () => {
             await service.revertOverSummaryEvent(mockState as any, mockEvent as any);
 
             expect(mockOver.isMaiden).toBe(true);
-            expect(mockBowler.maidens).toBe(1);
+            // The maiden is only credited to the bowler when the over completes (persistState),
+            // so undoing the scoring ball must not credit it early (it would double count later).
+            expect(mockBowler.maidens).toBe(0);
         });
     });
 

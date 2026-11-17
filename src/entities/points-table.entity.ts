@@ -26,7 +26,7 @@ export class PointsTable {
 
   @Prop({
     type: String,
-    enum: ['test', 'odi', 't20', 't20i'],
+    enum: ['test', 'odi', 't20', 't20i', 't10', 'hundred'],
   })
   matchFormat?: string;
 

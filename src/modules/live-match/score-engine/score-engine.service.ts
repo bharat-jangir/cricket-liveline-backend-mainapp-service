@@ -21,6 +21,7 @@ import { CommentaryGeneratorService } from '../services/commentary-generator.ser
 import { Player } from '../../../entities/player.entity';
 import { Team, TeamDocument } from '../../../entities/team.entity';
 import { Partnership, PartnershipDocument } from '../../../entities/partnership.entity';
+import { getRules, inningBallLimit, inningWicketLimit, formatOvers, normalizeDismissal, bowlerCreditedDismissal } from '../match-rules';
 
 @Injectable()
 export class ScoreEngineService {
@@ -48,6 +49,111 @@ export class ScoreEngineService {
         if (typeof playerId === 'string') return playerId;
         if (playerId._id) return playerId._id.toString();
         return playerId.toString();
+    }
+
+    /** Normalise legacy/lower-case event types to the canonical upper-case set. */
+    private normalizeEventType(event: BallEvent): void {
+        const known = ['RUN', 'WIDE', 'NO_BALL', 'BYE', 'LEG_BYE', 'PENALTY', 'WICKET', 'OVER_END', 'UNDO', 'SWAP_BATSMAN'];
+        const up = String(event.type || '').toUpperCase();
+        if (known.includes(up)) event.type = up;
+    }
+
+    private static readonly DELIVERY_TYPES = ['RUN', 'WIDE', 'NO_BALL', 'BYE', 'LEG_BYE', 'WICKET'];
+
+    /**
+     * Format-aware guards: completed match, innings full (balls / wickets), bowler quota,
+     * players selected, over-end only when an over is complete. Also records the
+     * dismissed player / parent delivery on the event so undo can mirror it exactly.
+     */
+    private validateEventAllowed(state: MatchState, event: BallEvent): void {
+        const type = event.type;
+        const isComposite = !!(event as any).isComposite;
+        const isDelivery = ScoreEngineService.DELIVERY_TYPES.includes(type);
+        const rules = getRules(state.match);
+        const { inning } = state;
+
+        if (state.match.status === 'completed' && (isDelivery || type === 'PENALTY' || type === 'OVER_END')) {
+            throw new BadRequestException('Match is completed. Undo the last ball to reopen scoring.');
+        }
+
+        if (type === 'OVER_END') {
+            if (inning.totalBalls <= 0 || inning.totalBalls % rules.ballsPerOver !== 0) {
+                throw new BadRequestException(`Over is not complete yet (${formatOvers(inning.totalBalls, rules)}).`);
+            }
+            return;
+        }
+
+        if (!isDelivery) return;
+
+        if (type === 'WICKET') {
+            const nsId = state.nonStriker ? this.getPlayerIdString(state.nonStriker.playerId) : '';
+            const stId = state.striker ? this.getPlayerIdString(state.striker.playerId) : '';
+            (event as any).dismissedPlayerId = event.playerId && String(event.playerId) === nsId ? nsId : stId;
+            if (isComposite) {
+                const last = state.currentOverBalls[state.currentOverBalls.length - 1];
+                (event as any).parentType = last?.isNoBall ? 'NO_BALL' : last?.isWide ? 'WIDE' : undefined;
+            }
+        }
+
+        // Second half of wide/no-ball + wicket was already validated with its trigger delivery
+        if (isComposite) return;
+
+        if (!inning.currentStrikerId || !inning.currentNonStrikerId || !inning.currentBowlerId) {
+            throw new BadRequestException('Select striker, non-striker and bowler before scoring.');
+        }
+
+        if ((state.striker as any)?.isOut || (state.nonStriker as any)?.isOut) {
+            throw new BadRequestException('A batter is out. Select the incoming batter before scoring the next ball.');
+        }
+
+        if (inning.totalWickets >= inningWicketLimit(rules, inning)) {
+            throw new BadRequestException(`Innings is over: all out (${inning.totalWickets} wickets).`);
+        }
+
+        const ballLimit = inningBallLimit(rules, inning);
+        if (ballLimit > 0 && inning.totalBalls >= ballLimit) {
+            throw new BadRequestException(
+                `Innings is over: all ${ballLimit} balls have been bowled${inning.type === 'super_over' ? ' (Super Over)' : ''}.`,
+            );
+        }
+
+        const bowler: any = state.bowler;
+        if (bowler && inning.type !== 'super_over' && rules.maxBallsPerBowler > 0 && (bowler.balls || 0) >= rules.maxBallsPerBowler) {
+            const name = bowler.playerId?.name || 'Bowler';
+            throw new BadRequestException(
+                `${name} has bowled the maximum ${rules.maxBallsPerBowler} balls for this format. Select another bowler.`,
+            );
+        }
+    }
+
+    /** Runs charged to the bowler for a delivery (ICC: byes/leg-byes/penalties are not; NB+bye only the no-ball). */
+    private bowlerCharge(event: BallEvent): number {
+        const t = event.type;
+        if (t === 'BYE' || t === 'LEG_BYE' || t === 'PENALTY') return 0;
+        const total = (event.runs || 0) + (event.extras || 0);
+        if (t === 'NO_BALL' && (event as any).isExtraType) return 1;
+        return total;
+    }
+
+    /** Dot ball for the bowler: legal-or-no-ball delivery with nothing charged (penalties never count). */
+    private isDotForBowler(event: BallEvent): boolean {
+        if (event.type === 'PENALTY') return false;
+        if (event.type === 'WICKET') {
+            return !(event as any).isComposite && (event.runs || 0) === 0;
+        }
+        return this.bowlerCharge(event) === 0;
+    }
+
+    /** Runs physically run by the batters (decides strike rotation). */
+    private runsRun(event: BallEvent): number {
+        if (event.type === 'WIDE') return Math.max(0, (event.extras || 1) - 1);
+        if (event.type === 'NO_BALL' && (event as any).isExtraType) return Math.max(0, (event.extras || 1) - 1);
+        if (event.type === 'PENALTY') return 0;
+        return event.runs || 0;
+    }
+
+    private calcEconomy(runs: number, balls: number, ballsPerOver = 6): number {
+        return balls > 0 ? runs / (balls / ballsPerOver) : 0;
     }
 
     /**
@@ -112,7 +218,7 @@ export class ScoreEngineService {
                     batsman1Id: nbId,
                     batsman2Id: obId,
                     isActive: true,
-                    startOver: (inning.totalBalls - (isLegalBall ? 1 : 0)) / 6
+                    startOver: (inning.totalBalls - (isLegalBall ? 1 : 0)) / (state.match.ballsPerOver || 6)
                 });
             }
 
@@ -156,10 +262,11 @@ export class ScoreEngineService {
                 if (isWicket) {
                     partnership.isActive = false;
                     partnership.isBroken = true;
-                    partnership.endOver = inning.totalBalls / 6;
+                    partnership.endOver = inning.totalBalls / (state.match.ballsPerOver || 6);
                     partnership.wicket = `${inning.totalRuns}/${inning.totalWickets}`;
                     // The striker is the one who got out
-                    partnership.batsman = (striker.playerId as any).name || 'Batsman';
+                    const dismissedDoc: any = this.pickDismissed(state, event);
+                    partnership.batsman = (dismissedDoc?.playerId as any)?.name || (striker.playerId as any).name || 'Batsman';
                 }
 
                 await partnership.save();
@@ -244,7 +351,7 @@ export class ScoreEngineService {
                 partnership.score = `${inning.totalRuns}/${inning.totalWickets}`;
                 
                 // If we undid the start of a partnership (it's now empty), delete it
-                if (partnership.totalBalls === 0 && partnership.totalRuns === 0 && !isWicket && wicketNumber > 1) {
+                if (partnership.totalBalls === 0 && partnership.totalRuns === 0 && !isWicket) {
                     await this.partnershipModel.findByIdAndDelete(partnership._id);
                 } else {
                     await partnership.save();
@@ -258,14 +365,33 @@ export class ScoreEngineService {
     /**
      * Main entry point for processing a ball or wicket
      */
+    // Serialises scoring per match so concurrent events (key repeat, two operators)
+    // cannot interleave their read-modify-write cycles. Single-instance only;
+    // scale-out would need a distributed lock (e.g. Redis) or optimistic versioning.
+    private readonly matchLocks = new Map<string, Promise<unknown>>();
+
     async handleEvent(matchId: string, event: BallEvent): Promise<any> {
+        const prev = this.matchLocks.get(matchId) || Promise.resolve();
+        const run = prev.catch(() => undefined).then(() => this.handleEventUnlocked(matchId, event));
+        this.matchLocks.set(matchId, run);
+        try {
+            return await run;
+        } finally {
+            if (this.matchLocks.get(matchId) === run) this.matchLocks.delete(matchId);
+        }
+    }
+
+    private async handleEventUnlocked(matchId: string, event: BallEvent): Promise<any> {
         try {
             const matchObjectId = this.validateAndConvertId(matchId);
+            this.normalizeEventType(event);
             const currentState = await this.loadState(matchObjectId);
 
             if (event.type === 'UNDO') {
                 return await this.processUndo(matchId, event);
             }
+
+            this.validateEventAllowed(currentState, event);
 
             // Check if this is a wicket trigger event (wdw, nbw)
             if ((event as any).triggerWicket) {
@@ -285,6 +411,17 @@ export class ScoreEngineService {
                         extras: event.extras || 0
                     }
                 };
+            }
+
+            // Guard against a double "end over" (accidental key repeat) which would flip strike twice
+            if (event.type === 'OVER_END') {
+                const last = await this.scoreHistoryModel.findOne({
+                    matchId: matchObjectId,
+                    inningId: currentState.inning._id,
+                }).sort({ _id: -1 }).exec();
+                if (last && last.event?.type === 'OVER_END') {
+                    throw new BadRequestException('Over has already been ended');
+                }
             }
 
             // Define events that should be stored in history for Undo
@@ -361,6 +498,8 @@ export class ScoreEngineService {
     public async loadState(matchId: Types.ObjectId): Promise<MatchState> {
         const match = await this.matchModel.findById(matchId).exec();
         if (!match) throw new NotFoundException('Match not found');
+        // Effective balls-per-over for the format (The Hundred = 5-ball sets); in-memory only
+        match.ballsPerOver = getRules(match).ballsPerOver;
 
         const inning = await this.inningModel.findOne({
             matchId,
@@ -466,8 +605,8 @@ export class ScoreEngineService {
                 const remainingBalls = bowler.balls % ballsPerOver;
                 bowler.overs = parseFloat(`${completedOvers}.${remainingBalls}`);
             }
-            const bowlerRunsInBall = (!isBye && !isLegBye && !isPenalty) ? (runsScored + extras) : 0;
-            if (bowlerRunsInBall === 0) {
+            const bowlerRunsInBall = this.bowlerCharge(event);
+            if (this.isDotForBowler(event)) {
                 bowler.dots = (bowler.dots || 0) + 1;
             }
             if (!isBye && !isLegBye && !isPenalty) {
@@ -475,9 +614,7 @@ export class ScoreEngineService {
                 if (runsScored === 4) bowler.fours = (bowler.fours || 0) + 1;
                 if (runsScored === 6) bowler.sixes = (bowler.sixes || 0) + 1;
             }
-            if (bowler.overs > 0) {
-                bowler.economy = bowler.runs / bowler.overs;
-            }
+            bowler.economy = this.calcEconomy(bowler.runs, bowler.balls || 0, ballsPerOver);
             if (bowler.wickets > 0) {
                 bowler.average = bowler.runs / bowler.wickets;
                 bowler.strikeRate = bowler.balls / bowler.wickets;
@@ -487,7 +624,7 @@ export class ScoreEngineService {
             }
         } else if (!bowler && state.inning.currentBowlerId) {
             // Create bowler if doesn't exist
-            const bowlerRunsInBall = !isBye && !isLegBye && !isPenalty ? (runsScored + extras) : 0;
+            const bowlerRunsInBall = this.bowlerCharge(event);
             const newBowler = await this.bowlingModel.create({
                 matchId: inning.matchId,
                 inningId: inning._id,
@@ -495,126 +632,132 @@ export class ScoreEngineService {
                 bowlingOrder: 1,
                 balls: isLegalBall ? 1 : 0,
                 runs: bowlerRunsInBall,
-                dots: bowlerRunsInBall === 0 ? 1 : 0,
+                dots: this.isDotForBowler(event) ? 1 : 0,
                 fours: runsScored === 4 && (!isBye && !isLegBye && !isPenalty) ? 1 : 0,
                 sixes: runsScored === 6 && (!isBye && !isLegBye && !isPenalty) ? 1 : 0,
                 overs: isLegalBall ? 0.1 : 0,
-                economy: isLegalBall ? bowlerRunsInBall / 0.1 : 0
+                economy: isLegalBall ? bowlerRunsInBall * (state.match.ballsPerOver || 6) : 0
             });
             state.bowler = newBowler as any;
         }
 
-        // 4. Strike Rotation - only for non-wide balls where batsmen actually run
-        if (!isWide && runsScored % 2 !== 0) {
+        // Record the ball against the batter who FACED it (before any strike rotation)
+        this.recordBallData(state, event, false);
+        await this.updatePartnership(state, event, false);
+
+        // Update over summary / commentary immediately for scoring balls
+        await this.updateOverSummary(state, event);
+
+        // 4. Strike rotation happens last: batters cross after the ball has been attributed
+        if (this.runsRun(event) % 2 !== 0) {
             this.swapStrike(state);
         }
 
-        this.recordBallData(state, event, false);
-        await this.updatePartnership(state, event, false);
-        
-        // Update over summary immediately for scoring balls
-        await this.updateOverSummary(state, event);
-        
         return state;
+    }
+
+    /** Does the bowler get credit for this wicket event? (uses stored parent delivery for wide/no-ball wickets) */
+    private creditsBowler(event: BallEvent): boolean {
+        const parent = (event as any).parentType || (event.type === 'WIDE' || event.type === 'NO_BALL' ? event.type : undefined);
+        const dt = normalizeDismissal(event.wicketType);
+        if (parent === 'NO_BALL') return false; // only run-out type dismissals possible; never the bowler's
+        if (parent === 'WIDE') return ['stumped', 'hit_wicket'].includes(dt);
+        return bowlerCreditedDismissal(event.wicketType);
+    }
+
+    /** Which batting scorecard is dismissed: explicit dismissedPlayerId (run-outs) or the striker. */
+    private pickDismissed(state: MatchState, event: BallEvent): any {
+        const id = (event as any).dismissedPlayerId;
+        if (id && state.nonStriker && this.getPlayerIdString(state.nonStriker.playerId) === String(id)) return state.nonStriker;
+        return state.striker;
     }
 
     private async processWicket(state: MatchState, event: BallEvent): Promise<MatchState> {
         const { inning, striker, bowler } = state;
-        const isComposite = (event as any).isComposite;
+        const isComposite = !!(event as any).isComposite;
+        const ballsPerOver = state.match.ballsPerOver || 6;
 
         const isWide = event.type === 'WIDE';
         const isNoBall = event.type === 'NO_BALL';
         const isLegalBall = !isWide && !isNoBall;
+        const runs = isComposite ? 0 : (event.runs || 0);
 
         if (striker) {
-            // Check for All Out condition before processing another wicket
-            const isSuperOver = inning.type === 'super_over';
-            const maxWickets = isSuperOver ? 2 : 10;
+            const out: any = this.pickDismissed(state, event);
+            const rules = getRules(state.match);
+            const maxWickets = inningWicketLimit(rules, inning);
 
             if (inning.totalWickets >= maxWickets) {
                 throw new BadRequestException(`Inning is already All Out (${inning.totalWickets} wickets). Cannot process another wicket.`);
             }
 
-            // Only count balls for legal deliveries
-            // Skip ball increment if this is a composite event (already counted in previous trigger event)
-            if (!isComposite && isLegalBall) {
-                striker.balls += 1;
-                striker.strikeRate = striker.balls > 0 ? (striker.runs / striker.balls) * 100 : 0;
+            // Runs completed before the dismissal (e.g. run-out going for the 2nd run)
+            if (runs > 0) {
+                inning.totalRuns += runs;
+                striker.runs += runs;
+                if (bowler) bowler.runs += runs;
             }
 
+            // Only the striker faces the ball; skip for composite (already counted in trigger event)
+            if (!isComposite && isLegalBall) {
+                striker.balls += 1;
+            }
+            striker.strikeRate = striker.balls > 0 ? (striker.runs / striker.balls) * 100 : 0;
+
             // Mark player as out
-            striker.isOut = true;
-            striker.dismissalType = this.normalizeWicketType(event.wicketType || event.type);
-            striker.bowlerId = bowler?.playerId;
-            striker.teamId = inning.battingTeamId;
+            out.isOut = true;
+            out.dismissalType = this.normalizeWicketType(event.wicketType || event.type);
+            out.bowlerId = bowler?.playerId;
+            out.teamId = inning.battingTeamId;
 
             inning.totalWickets += 1;
-
-            // Skip ball increment if composite (already counted)
             if (!isComposite && isLegalBall) {
                 inning.totalBalls += 1;
             }
 
-            // Update lastWicket in inning
             inning.lastWicket = {
-                name: (striker.playerId as any)?.name || `Player ${striker.playerId}`,
-                playerName: (striker.playerId as any)?.name || `Player ${striker.playerId}`,
+                name: (out.playerId as any)?.name || `Player ${out.playerId}`,
+                playerName: (out.playerId as any)?.name || `Player ${out.playerId}`,
                 dismissal: this.normalizeWicketType(event.wicketType || event.type),
-                runs: striker.runs,
-                balls: striker.balls,
-                fours: striker.fours,
-                sixes: striker.sixes,
+                runs: out.runs,
+                balls: out.balls,
+                fours: out.fours,
+                sixes: out.sixes,
                 to: (bowler?.playerId as any)?.name || `Bowler ${bowler?.playerId}`,
-                tr: `${striker.runs}(${striker.balls})`,
-                playerId: striker.playerId
+                tr: `${out.runs}(${out.balls})`,
+                playerId: out.playerId
             };
 
-            // Set fielder if provided
             if (event.helperId) {
-                striker.fielderId = new Types.ObjectId(event.helperId);
+                out.fielderId = new Types.ObjectId(event.helperId);
             }
 
             if (bowler) {
-                // Skip ball increment if composite (already counted)
-                if (!isComposite && (isLegalBall || isNoBall)) {
+                if (!isComposite && isLegalBall) {
                     bowler.balls = (bowler.balls || 0) + 1;
-                    const completedOvers = Math.floor(bowler.balls / 6);
-                    const remainingBalls = bowler.balls % 6;
+                    const completedOvers = Math.floor(bowler.balls / ballsPerOver);
+                    const remainingBalls = bowler.balls % ballsPerOver;
                     bowler.overs = parseFloat(`${completedOvers}.${remainingBalls}`);
+                    if (this.isDotForBowler(event)) bowler.dots = (bowler.dots || 0) + 1;
                 }
 
-                // ICC Law Refinement: 
-                // Rule: Wicket is only credited to the bowler if the batter is Stumped or Hit Wicket on a Wide.
-                // Rule: On No Ball, bowler gets NO credit for any dismissal (ICC Law 21.18 excludes Hit Wicket).
-                // Standard: Bowled, Caught, Stumped, LBW, Hit Wicket on a legal ball.
-                const dt = (event.wicketType || 'bowled').toLowerCase();
-                let bowlGetsCredit = false;
-
-                if (isLegalBall) {
-                    bowlGetsCredit = ['bowled', 'caught', 'stumped', 'lbw', 'hit_wicket'].includes(dt);
-                } else if (isWide) {
-                    bowlGetsCredit = ['stumped', 'hit_wicket'].includes(dt);
-                } else if (isNoBall) {
-                    // Batter cannot be out Hit Wicket on a No Ball. 
-                    // Other dismissals on NB (Run Out, etc.) are not credited to bowler.
-                    bowlGetsCredit = false;
-                }
-
-                if (bowlGetsCredit) {
+                if (this.creditsBowler(event)) {
                     bowler.wickets += 1;
                 }
 
-                if (bowler.overs > 0) {
-                    bowler.economy = bowler.runs / bowler.overs;
+                bowler.economy = this.calcEconomy(bowler.runs, bowler.balls || 0, ballsPerOver);
+                if (bowler.wickets > 0) {
+                    bowler.average = bowler.runs / bowler.wickets;
+                    bowler.strikeRate = (bowler.balls || 0) / bowler.wickets;
                 }
                 bowler.teamId = inning.bowlingTeamId;
             }
 
             this.recordBallData(state, event, true);
             await this.updatePartnership(state, event, true);
-
-            // Update over summary immediately for wickets
             await this.updateOverSummary(state, event);
+
+            // The dismissed non-striker is persisted via nonStriker.save() in persistState
         }
         return state;
     }
@@ -704,7 +847,7 @@ export class ScoreEngineService {
             const matchScore = {
                 runs: inning.totalRuns,
                 wickets: inning.totalWickets,
-                overs: `${Math.floor(inning.totalBalls / 6)}.${inning.totalBalls % 6}`
+                overs: `${Math.floor(inning.totalBalls / ballsPerOver)}.${inning.totalBalls % ballsPerOver}`
             };
 
             const highlight = await this.commentaryGenerator.createOverSummaryHighlight(
@@ -766,8 +909,10 @@ export class ScoreEngineService {
     private async processUndo(matchId: string, event?: BallEvent): Promise<any> {
         this.logger.log(`[UNDO] Starting undo for match ${matchId}`);
         // Sort by _id descending to get the absolute latest event
+        const activeState = await this.loadState(new Types.ObjectId(matchId));
         const lastHistory = await this.scoreHistoryModel.findOne({
-            matchId: new Types.ObjectId(matchId)
+            matchId: new Types.ObjectId(matchId),
+            inningId: activeState.inning._id,
         }).sort({ _id: -1 }).exec();
 
         if (!lastHistory) {
@@ -822,6 +967,14 @@ export class ScoreEngineService {
         // Broadcast both match update and full scorecard delta to ensure UI sync
         await this.publishMatchReset(matchId, currentState);
         await this.publishScorecardDelta(matchId, currentState);
+
+        // Undoing after the match was auto-concluded reopens it
+        if (currentState.match.status === 'completed') {
+            await this.matchModel.updateOne(
+                { _id: currentState.match._id },
+                { $set: { status: 'live' }, $unset: { result: 1 } },
+            );
+        }
 
         // Delete the history entry
         await this.scoreHistoryModel.findByIdAndDelete(lastHistory._id);
@@ -923,26 +1076,30 @@ export class ScoreEngineService {
             if (state.striker && !isWide && !isPenalty) {
                 const striker = state.striker;
                 const isComposite = (event as any).isComposite;
-                if (!isBye && !isLegBye && !isWicket && !isComposite) {
+                if (!isBye && !isLegBye && !isComposite) {
                     striker.runs = Math.max(0, striker.runs - runsScored);
-                    if (runsScored === 4) striker.fours = Math.max(0, striker.fours - 1);
-                    if (runsScored === 6) striker.sixes = Math.max(0, striker.sixes - 1);
+                    if (!isWicket) {
+                        if (runsScored === 4) striker.fours = Math.max(0, striker.fours - 1);
+                        if (runsScored === 6) striker.sixes = Math.max(0, striker.sixes - 1);
+                    }
                 }
-                
-                // Both No Balls and Wides do not count as a ball faced for the striker in this implementation
-                // Also skip ball decrement if this is a composite event (already handled by parent)
+
+                // Skip ball decrement if this is a composite event (already handled by parent)
                 if (isLegalBall && !isComposite) {
                     striker.balls = Math.max(0, striker.balls - 1);
-                    striker.strikeRate = striker.balls > 0 ? (striker.runs / striker.balls) * 100 : 0;
                 }
-                if (isWicket) {
-                    striker.isOut = false;
-                    striker.dismissalType = null;
-                    striker.dismissalText = null;
-                    striker.bowlerId = null;
-                    striker.fielderId = null;
-                    striker.fielder2Id = null;
-                    striker.teamId = null;
+                striker.strikeRate = striker.balls > 0 ? (striker.runs / striker.balls) * 100 : 0;
+            }
+            if (isWicket) {
+                const out: any = this.pickDismissed(state, event);
+                if (out) {
+                    out.isOut = false;
+                    out.dismissalType = null;
+                    out.dismissalText = null;
+                    out.bowlerId = null;
+                    out.fielderId = null;
+                    out.fielder2Id = null;
+                    out.teamId = null;
                 }
             }
 
@@ -956,8 +1113,8 @@ export class ScoreEngineService {
                     const remainingBalls = bowler.balls % ballsPerOver;
                     bowler.overs = parseFloat(`${completedOvers}.${remainingBalls}`);
                 }
-                const bowlerRunsInBall = (!isBye && !isLegBye && !isPenalty) ? (runsScored + extras) : 0;
-                if (bowlerRunsInBall === 0) {
+                const bowlerRunsInBall = this.bowlerCharge(event);
+                if (this.isDotForBowler(event)) {
                     bowler.dots = Math.max(0, (bowler.dots || 0) - 1);
                 }
                 if (!isBye && !isLegBye && !isPenalty) {
@@ -966,29 +1123,11 @@ export class ScoreEngineService {
                     if (runsScored === 6) bowler.sixes = Math.max(0, (bowler.sixes || 0) - 1);
                 }
 
-                if (isWicket) {
-                    // Rule-based credit reversal
-                    const dt = (event.wicketType || 'bowled').toLowerCase();
-                    let bowlHadCredit = false;
-
-                    if (isLegalBall) {
-                        bowlHadCredit = ['bowled', 'caught', 'stumped', 'lbw', 'hit_wicket'].includes(dt);
-                    } else if (isWide) {
-                        bowlHadCredit = ['stumped', 'hit_wicket'].includes(dt);
-                    } else if (isNoBall) {
-                        bowlHadCredit = false;
-                    }
-
-                    if (bowlHadCredit) {
-                        bowler.wickets = Math.max(0, bowler.wickets - 1);
-                    }
+                if (isWicket && this.creditsBowler(event)) {
+                    bowler.wickets = Math.max(0, bowler.wickets - 1);
                 }
                 // Recalculate economy - handle division by zero
-                if (bowler.overs > 0) {
-                    bowler.economy = bowler.runs / bowler.overs;
-                } else {
-                    bowler.economy = 0;
-                }
+                bowler.economy = this.calcEconomy(bowler.runs, bowler.balls || 0, state.match.ballsPerOver || 6);
 
                 if (bowler.wickets > 0) {
                     bowler.average = bowler.runs / bowler.wickets;
@@ -1166,8 +1305,8 @@ export class ScoreEngineService {
         // Check for maiden over completion (6 legal balls)
         // Must do this BEFORE saving bowler so the maiden is persisted
         const isLegalBall = event && !['WIDE', 'NO_BALL', 'PENALTY', 'OVER_END', 'UNDO'].includes(event.type);
-        if (isLegalBall && inning.totalBalls > 0 && inning.totalBalls % 6 === 0 && state.bowler) {
-            const overNumber = Math.floor(inning.totalBalls / 6);
+        if (isLegalBall && inning.totalBalls > 0 && inning.totalBalls % ballsPerOver === 0 && state.bowler) {
+            const overNumber = Math.floor(inning.totalBalls / ballsPerOver);
             const overSummary = await this.overSummaryModel.findOne({
                 matchId: inning.matchId,
                 inningId: inning._id,
@@ -1415,7 +1554,7 @@ export class ScoreEngineService {
             : '—/—';
         const balls = state.inning.totalBalls;
         const overs = inningBattingFor
-            ? `${Math.floor(balls / 6)}.${balls % 6}`
+            ? `${Math.floor(balls / (state.match.ballsPerOver || 6))}.${balls % (state.match.ballsPerOver || 6)}`
             : '—';
         return {
             teamId: team?._id?.toString() || '',
@@ -1470,6 +1609,10 @@ export class ScoreEngineService {
             runRate: Number(runRate.toFixed(2)),
             currentInning: state.inning.inningNumber,
             currentBall: currentBall || '0',
+            oversDisplay: formatOvers(totalBalls, getRules(state.match)),
+            maxBalls: inningBallLimit(getRules(state.match), state.inning),
+            ballsRemaining: Math.max(0, inningBallLimit(getRules(state.match), state.inning) - totalBalls),
+            format: getRules(state.match).format,
             recentBalls,
             powerPlay: state.inning.powerPlay,
 
@@ -1763,19 +1906,33 @@ export class ScoreEngineService {
         }
     }
 
+    /** Always returns a value allowed by the BattingScorecard.dismissalType enum. */
     private normalizeWicketType(rawType: string): string {
-        if (!rawType) return 'bowled';
-        const map: Record<string, string> = {
-            'b': 'bowled',
-            'w': 'wicket',
+        const legacy: Record<string, string> = {
             '^1': 'bowled',
             '^2': 'caught',
-            '^4': 'run out',
+            '^4': 'run_out',
             '^5': 'lbw',
             '^8': 'stumped',
         };
-        const type = rawType.toLowerCase();
-        return map[type] || map[rawType] || rawType || 'bowled';
+        if (rawType && legacy[rawType]) return legacy[rawType];
+        const t = normalizeDismissal(rawType);
+        const valid = [
+            'bowled', 'caught', 'lbw', 'run_out', 'stumped', 'hit_wicket',
+            'retired_out', 'obstructing_the_field', 'handled_ball', 'timed_out', 'hit_ball_twice',
+        ];
+        if (valid.includes(t)) return t;
+        const alias: Record<string, string> = {
+            b: 'bowled',
+            c: 'caught',
+            ct: 'caught',
+            caught_and_bowled: 'caught',
+            caught_bowled: 'caught',
+            retired: 'retired_out',
+            retired_hurt: 'retired_out',
+        };
+        // Generic wicket ('w') defaults to bowled until the scorer edits the dismissal details
+        return alias[t] || 'bowled';
     }
 
     private extractId(input: any): string {
@@ -1794,4 +1951,4 @@ export class ScoreEngineService {
         // Fallback for non-ObjectId strings
         return typeof input === 'string' ? input : '';
     }
-}
+}

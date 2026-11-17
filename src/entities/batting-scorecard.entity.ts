@@ -77,7 +77,7 @@ export class BattingScorecard {
   isAbsent: boolean;
 
   @Prop({
-    enum: ['bowled', 'caught', 'lbw', 'run_out', 'stumped', 'hit_wicket', 'not_out', 'retired_hurt', 'absent'],
+    enum: ['bowled', 'caught', 'lbw', 'run_out', 'stumped', 'hit_wicket', 'not_out', 'retired_hurt', 'absent', 'retired_out', 'obstructing_the_field', 'handled_ball', 'timed_out', 'hit_ball_twice'],
     default: 'not_out',
   })
   dismissalType: string;

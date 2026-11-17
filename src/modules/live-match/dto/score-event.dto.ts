@@ -25,6 +25,11 @@ export class ScoreEventDto {
     @IsOptional()
     playerId?: string;
 
+    /** Fielder involved in the dismissal (catch / run-out / stumping) */
+    @IsString()
+    @IsOptional()
+    helperId?: string;
+
     @IsNumber()
     @IsOptional()
     ballNumber?: number;

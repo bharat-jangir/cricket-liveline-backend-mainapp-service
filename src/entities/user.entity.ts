@@ -81,8 +81,7 @@ export const UserSchema = SchemaFactory.createForClass(User);
 UserSchema.index({ email: 1, isActive: 1 });
 UserSchema.index({ phone: 1, isActive: 1 });
 UserSchema.index({ role: 1, isActive: 1 });
-UserSchema.index({ email: 1 });
-UserSchema.index({ phone: 1 });
+// email/phone already have unique indexes from @Prop({ unique: true })
 
 // Hash password before saving
 UserSchema.pre('save', async function (next) {

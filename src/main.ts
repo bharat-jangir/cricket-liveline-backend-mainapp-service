@@ -50,7 +50,10 @@ async function bootstrap() {
 
   // CORS configuration
   app.enableCors({
-    origin: [process.env.FRONTEND_URL || 'http://localhost:5173', 'http://localhost:3000'],
+    origin: [
+      ...(process.env.FRONTEND_URL || 'http://localhost:5173').split(',').map((o) => o.trim()).filter(Boolean),
+      'http://localhost:3000',
+    ],
     credentials: true,
   });
 
@@ -67,11 +70,14 @@ async function bootstrap() {
     },
   });
 
+  app.enableShutdownHooks();
   await app.startAllMicroservices();
 
   // Use a different port for HTTP vs TCP
   const httpPort = process.env.MAIN_APP_HTTP_PORT || 5001;
-  await app.listen(httpPort, '0.0.0.0');
+  // The raw HTTP controllers have no auth; only the gateway (TCP) should be reachable.
+  // Set HOST=0.0.0.0 explicitly if you really need to expose it (e.g. container health checks).
+  await app.listen(httpPort, process.env.HOST || '127.0.0.1');
 
   const logger = new Logger('Bootstrap');
   logger.log(`🚀 Main App HTTP is running on: http://localhost:${httpPort}`);

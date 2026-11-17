@@ -1,3 +1,4 @@
+import { formatDefaults } from '../live-match/match-rules';
 import { Injectable, HttpStatus } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
@@ -35,7 +36,12 @@ export class MatchesService {
       }
 
       // Convert string IDs to ObjectIds before saving
+      // Format-specific defaults (T20 = 6x20, The Hundred = 5-ball sets x20, ...)
+      const fmt = formatDefaults(createMatchDto.matchFormat);
       const matchData: any = {
+        ballsPerOver: fmt.ballsPerOver,
+        oversPerInning: fmt.oversPerInning,
+        maxBowlerLimit: fmt.maxBowlerLimit,
         ...createMatchDto,
         teamAId: new Types.ObjectId(createMatchDto.teamAId),
         teamBId: new Types.ObjectId(createMatchDto.teamBId),
@@ -406,6 +412,12 @@ export class MatchesService {
 
       // Convert string IDs to ObjectIds if they exist in updateMatchDto
       const updateData: any = { ...updateMatchDto };
+      if (updateMatchDto.matchFormat) {
+        const fmt = formatDefaults(updateMatchDto.matchFormat);
+        if (updateMatchDto.ballsPerOver === undefined) updateData.ballsPerOver = fmt.ballsPerOver;
+        if (updateMatchDto.oversPerInning === undefined) updateData.oversPerInning = fmt.oversPerInning;
+        if (updateMatchDto.maxBowlerLimit === undefined) updateData.maxBowlerLimit = fmt.maxBowlerLimit;
+      }
       if (updateMatchDto.teamAId) {
         updateData.teamAId = new Types.ObjectId(updateMatchDto.teamAId);
       }

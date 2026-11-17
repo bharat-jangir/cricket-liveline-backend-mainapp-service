@@ -11,7 +11,7 @@ export class QueryPointsTableDto {
   tournamentId?: string;
 
   @IsOptional()
-  @IsEnum(['test', 'odi', 't20', 't20i'])
+  @IsEnum(['test', 'odi', 't20', 't20i', 't10', 'hundred'])
   matchFormat?: string;
 
   @IsOptional()
