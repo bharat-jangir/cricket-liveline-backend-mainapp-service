@@ -47,6 +47,7 @@ async function main() {
     Umpire: (await import('../../src/entities/umpire.entity')).Umpire,
     Series: (await import('../../src/entities/series.entity')).Series,
     SeriesTeam: (await import('../../src/entities/series-team.entity')).SeriesTeam,
+    SeriesVenue: (await import('../../src/entities/series-venue.entity')).SeriesVenue,
     Match: (await import('../../src/entities/match.entity')).Match,
     Inning: (await import('../../src/entities/inning.entity')).Inning,
     Batting: (await import('../../src/entities/batting-scorecard.entity')).BattingScorecard,
@@ -58,6 +59,8 @@ async function main() {
     Points: (await import('../../src/entities/points-table.entity')).PointsTable,
     User: (await import('../../src/entities/user.entity')).User,
     Ranking: (await import('../../src/modules/ranking/ranking.entity')).Ranking,
+    Article: (await import('../../src/entities/article.entity')).Article,
+    Short: (await import('../../src/entities/short.entity')).Short,
   };
   const { getRules, formatDefaults } = await import('../../src/modules/live-match/match-rules');
   const { oid, rng, TEAMS, playersFor, VENUES, UMPIRES, SERIES, RANKING_TEAMS } = await import('./data');
@@ -105,6 +108,7 @@ async function main() {
     // Super-over innings are created by the app with random ids but carry the seeded matchId (covered above)
     await m.Match.deleteMany({ _id: { $in: matchIds } });
     await m.SeriesTeam.deleteMany({ seriesId: { $in: sIds } });
+    await m.SeriesVenue.deleteMany({ seriesId: { $in: sIds } });
     await m.Points.deleteMany({ seriesId: { $in: sIds } });
     await m.Series.deleteMany({ _id: { $in: sIds } });
     await m.Player.deleteMany({ _id: { $in: allPlayers.map((p) => p.id) } });
@@ -112,6 +116,8 @@ async function main() {
     await m.Venue.deleteMany({ _id: { $in: VENUES.map((v) => venueId(v.key)) } });
     await m.Umpire.deleteMany({ _id: { $in: UMPIRES.map((_, i) => oid(`umpire:${i}`)) } });
     await m.Ranking.deleteMany({ cricbuzzId: /^seed-/ });
+    await m.Article.deleteMany({ slug: /^seed-/ });
+    await m.Short.deleteMany({ _id: { $in: [0, 1, 2, 3].map((i) => oid(`short:${i}`)) } });
     await m.User.deleteMany({ _id: { $in: [oid('user:admin'), oid('user:scorer')] } });
     console.log('Purged previously seeded data.');
   };
@@ -162,6 +168,52 @@ async function main() {
 
   await seedUsers();
 
+  const SERIES_VENUES: Record<string, string[]> = {
+    'ind-aus-t20i': ['mcg', 'wankhede'], 'eng-rsa-odi': ['newlands', 'lords'], 'nz-pak-test': ['hagley'], hundred: ['lords', 'oval'],
+    'premier-t20': ['wankhede'], 't10-blast': ['oval'], 'asia-cup': ['wankhede'], 'tri-series-2025': ['newlands'],
+  };
+
+  // ---------- news + shorts (content CMS test data) ----------------------------------------
+  const seedContent = async () => {
+    const done = await m.Match.find({ slug: /^seed-/, status: 'completed', 'result.resultText': { $exists: true } }).sort({ matchDate: -1 }).limit(6).lean();
+    const live = await m.Match.find({ slug: /^seed-/, status: 'live' }).limit(2).lean();
+    const adminId = oid('user:admin');
+    const ago = (h: number) => new Date(Date.now() - h * 3_600_000);
+    const docs: any[] = [];
+    done.forEach((mt: any, i: number) => {
+      docs.push({
+        slug: `seed-report-${mt.slug.replace('seed-', '')}`, title: `${mt.title.split(',')[0]}: ${mt.result.resultText}`,
+        summary: `A full report from ${mt.title}.`,
+        body: `${mt.result.resultText}.\n\n## How it unfolded\n\nThe match produced plenty of talking points across both innings, with the result decided late on. Full scorecard and ball-by-ball commentary are available on the match page.\n\n## What next\n\nBoth sides now turn their attention to the remaining fixtures in the series.`,
+        category: 'match-report', tags: ['test-data', mt.matchFormat], isFeatured: i === 0, matchId: mt._id, seriesId: mt.seriesId, publishedAt: ago(4 + i * 7),
+      });
+    });
+    live.forEach((mt: any, i: number) => docs.push({
+      slug: `seed-preview-${mt.slug.replace('seed-', '')}`, title: `Live: ${mt.title.split(',')[0]} — what to watch`,
+      summary: 'Key battles to follow while the match is in progress.',
+      body: `The match is under way.\n\n## Key battles\n\nThe openers against the new ball, and how the middle overs are managed, are likely to decide this one.\n\n## Follow live\n\nOpen the match page for ball-by-ball commentary and the live scorecard.`,
+      category: 'preview', tags: ['test-data'], isFeatured: false, matchId: mt._id, seriesId: mt.seriesId, publishedAt: ago(1 + i),
+    }));
+    docs.push(
+      { slug: 'seed-analysis-the-hundred-sets', title: 'Explained: how The Hundred’s 5-ball sets change bowling plans', summary: 'Two sets in a row, 20 balls a bowler, and a 25-ball powerplay.', body: 'The Hundred replaces overs with 5-ball sets and 100-ball innings.\n\n## Bowling quotas\n\nA bowler delivers either five or ten consecutive balls and no more than 20 in total, so captains plan around pairs of sets.\n\n## Powerplay\n\nThe first 25 balls are a powerplay, which makes the opening five sets the key batting window.', category: 'analysis', tags: ['test-data', 'the-hundred'], isFeatured: false, publishedAt: ago(30) },
+      { slug: 'seed-rules-super-over', title: 'Super Over rules: what happens when a T20 ends level', summary: 'One over each, two wickets, and another if it ties again.', body: 'When a limited-overs match is tied, a Super Over decides the winner.\n\n## The basics\n\nEach side faces one over (five balls in The Hundred) with a maximum of two wickets lost.\n\n## If it ties again\n\nFurther Super Overs are played until there is a winner.', category: 'rules', tags: ['test-data'], isFeatured: false, publishedAt: ago(50) },
+    );
+    for (const d of docs) {
+      await m.Article.updateOne({ slug: d.slug }, { $setOnInsert: { ...d, status: 'published', authorId: adminId, authorName: 'Seed Admin', views: 0 } }, { upsert: true });
+    }
+    // A draft and a scheduled article, to exercise the CMS states
+    await m.Article.updateOne({ slug: 'seed-draft-example' }, { $setOnInsert: { slug: 'seed-draft-example', title: 'Draft: not visible to readers', body: 'This draft should never appear in the public API.', category: 'general', tags: ['test-data'], status: 'draft', authorName: 'Seed Admin', authorId: adminId } }, { upsert: true });
+    await m.Article.updateOne({ slug: 'seed-scheduled-example' }, { $setOnInsert: { slug: 'seed-scheduled-example', title: 'Scheduled: goes live next week', body: 'This article is scheduled for the future.', category: 'general', tags: ['test-data'], status: 'published', publishedAt: new Date(Date.now() + 7 * 86_400_000), authorName: 'Seed Admin', authorId: adminId } }, { upsert: true });
+
+    // Shorts use public sample files purely as playable test media (not cricket footage)
+    const base = 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample';
+    const clips = [['ForBiggerBlazes', 15], ['ForBiggerEscapes', 15], ['ForBiggerFun', 60], ['ForBiggerJoyrides', 15]] as const;
+    for (const [i, [name, dur]] of clips.entries()) {
+      await m.Short.updateOne({ _id: oid(`short:${i}`) }, { $setOnInsert: { _id: oid(`short:${i}`), title: `Sample clip ${i + 1} (test data)`, description: 'Placeholder media used to test playback.', videoUrl: `${base}/${name}.mp4`, thumbnail: `${base}/images/${name}.jpg`, durationSec: dur, tags: ['test-data'], status: 'published', publishedAt: ago(i + 1), authorId: adminId, views: 0, likes: 0 } }, { upsert: true });
+    }
+    console.log(`   content: ${docs.length + 2} articles (incl. 1 draft, 1 scheduled), ${clips.length} shorts`);
+  };
+
   // ---------- series --------------------------------------------------------------------------
   const day = 86_400_000;
   const now = Date.now();
@@ -176,8 +228,27 @@ async function main() {
         hasPoints: !!sp.points, totalTeams: s.teams.length, isActive: true,
       },
     }, { upsert: true });
-    await m.SeriesTeam.insertMany(s.teams.map((t) => ({ _id: oid(`seriesteam:${s.key}:${t}`), seriesId: seriesId(s.key), teamId: teamId(t), format: s.fmt })), { ordered: false }).catch(dupOk);
+    // per-series squads (15 players each, with captain / vice-captain / keeper flags)
+    for (const t of s.teams) {
+      const ps = teamPlayers.get(t)!;
+      await m.SeriesTeam.updateOne({ _id: oid(`seriesteam:${s.key}:${t}`) }, {
+        $set: {
+          squadPlayers: ps.map((p) => ({
+            playerId: p.id, role: p.role, jerseyNumber: p.idx + 1,
+            isCaptain: p.idx === 0, isViceCaptain: p.idx === 1, isWicketKeeper: p.idx === 4, isNotEligible: false,
+          })),
+        },
+        $setOnInsert: { _id: oid(`seriesteam:${s.key}:${t}`), seriesId: seriesId(s.key), teamId: teamId(t), format: s.fmt },
+      }, { upsert: true });
+    }
+    for (const [i, v] of (SERIES_VENUES[s.key] || []).entries()) {
+      await m.SeriesVenue.updateOne({ _id: oid(`seriesvenue:${s.key}:${v}`) }, {
+        $setOnInsert: { _id: oid(`seriesvenue:${s.key}:${v}`), seriesId: seriesId(s.key), venueId: venueId(v), isActive: true, priority: i },
+      }, { upsert: true });
+    }
   }
+  if (flag('content-only')) { await seedContent(); console.log('Content seeded.'); await moduleRef.close(); return; }
+  if (flag('base-only')) { console.log('Base data (teams, players, series, squads, venues) seeded.'); await moduleRef.close(); return; }
 
   // ---------- match helpers -------------------------------------------------------------------
   const FMT_META: Record<string, { fmt: string; type: string; innings: number }> = {
@@ -394,6 +465,8 @@ async function main() {
     }
   }
   await m.Ranking.insertMany(rankDocs);
+
+  await seedContent();
 
   // series match counters
   for (const s of SERIES) {
