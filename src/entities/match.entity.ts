@@ -39,6 +39,9 @@ export class Match {
   })
   slug: string;
 
+  @Prop({ default: '' })
+  f_key: string;
+
   // @Prop({
   //   type: Types.ObjectId,
   //   // ref: 'Tournament', // Removed ref - Tournament model not registered

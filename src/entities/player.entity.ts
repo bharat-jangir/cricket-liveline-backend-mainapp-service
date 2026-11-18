@@ -44,6 +44,9 @@ export class Player {
   })
   slug: string;
 
+  @Prop({ default: '' })
+  f_key: string;
+
   @Prop({ default: null })
   image?: string;
 
