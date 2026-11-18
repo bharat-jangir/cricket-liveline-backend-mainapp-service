@@ -42,6 +42,10 @@ export class CreateMatchDto {
   tournamentId?: string;
 
   @IsOptional()
+  @IsString()
+  f_key?: string;
+
+  @IsOptional()
   @IsMongoId()
   seriesId?: string;
 
@@ -106,13 +110,11 @@ export class CreateMatchDto {
   @IsOptional()
   @IsNumber()
   @Min(1)
-  @Max(4)
   currentInning?: number;
 
   @IsOptional()
   @IsNumber()
   @Min(2)
-  @Max(4)
   totalInnings?: number;
 
   @IsOptional()
